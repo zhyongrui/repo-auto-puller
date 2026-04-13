@@ -61,6 +61,8 @@ if [[ ! -f "${CONFIG_PATH}" ]]; then
   cat > "${CONFIG_PATH}" <<'EOF'
 [defaults]
 log_file = "~/.local/state/repo-auto-puller/repo-auto-puller.log"
+state_file = "~/.local/state/repo-auto-puller/status.json"
+history_file = "~/.local/state/repo-auto-puller/history.jsonl"
 verbose = false
 
 [[repositories]]

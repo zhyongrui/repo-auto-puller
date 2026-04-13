@@ -18,6 +18,7 @@
 - Linux `aarch64`
 - macOS `x86_64`
 - macOS `aarch64`
+- Windows `x86_64`
 
 ## 推荐安装方式
 
@@ -41,6 +42,18 @@ curl -fsSL https://raw.githubusercontent.com/zhyongrui/repo-auto-puller/main/scr
 - 写一个默认配置文件
 - 提示你用 `install-service` 安装对应平台的后台服务
 - 如果 `curl` 因网络/TLS 抖动失败，且系统已安装 `gh`，会自动回退到 GitHub CLI 下载
+
+Windows 用户可以直接运行 PowerShell 安装脚本：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
+```
+
+默认安装位置：
+
+- 二进制：`%LOCALAPPDATA%\\repo-auto-puller\\repo-auto-puller.exe`
+- 配置：`%APPDATA%\\repo-auto-puller\\config.toml`
+- 状态与日志：`%LOCALAPPDATA%\\repo-auto-puller\\`
 
 ## 配置
 
@@ -208,6 +221,7 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml check-config
 
 - Linux：systemd user service
 - macOS：launchd agent
+- Windows：Task Scheduler 登录任务
 
 先执行：
 
@@ -263,6 +277,34 @@ launchctl kickstart -k gui/$(id -u)/repo-auto-puller
 tail -f ~/.local/state/repo-auto-puller/repo-auto-puller.log
 ```
 
+#### Windows
+
+后台任务会写入：
+
+```powershell
+%APPDATA%\repo-auto-puller\repo-auto-puller.cmd
+```
+
+并注册一个同名 Task Scheduler 任务。
+
+查看任务：
+
+```powershell
+schtasks /Query /TN repo-auto-puller
+```
+
+手动启动一次：
+
+```powershell
+schtasks /Run /TN repo-auto-puller
+```
+
+看最近状态：
+
+```powershell
+Get-Content $env:LOCALAPPDATA\repo-auto-puller\status.json
+```
+
 ### 卸载后台服务
 
 如果你只想移除后台服务定义，而保留二进制和配置文件：
@@ -281,6 +323,7 @@ repo-auto-puller uninstall-service --service-name my-repo-auto-puller
 
 - Linux：删除 `~/.config/systemd/user/<service>.service`
 - macOS：删除 `~/Library/LaunchAgents/<service>.plist`
+- Windows：删除 Task Scheduler 任务和 `%APPDATA%\\repo-auto-puller\\<service>.cmd`
 
 ## 工具为什么没有自动拉取
 

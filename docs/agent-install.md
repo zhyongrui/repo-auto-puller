@@ -38,7 +38,8 @@
 
 - 从 GitHub Releases 下载对应平台的压缩包
 - 解压得到 `repo-auto-puller`
-- 安装到 `~/.local/bin/repo-auto-puller`
+- Linux/macOS 安装到 `~/.local/bin/repo-auto-puller`
+- Windows 安装到 `%LOCALAPPDATA%\\repo-auto-puller\\repo-auto-puller.exe`
 - 如果 `curl` 下载偶发失败，而目标机器上有 `gh`，优先回退到 `gh release download`
 
 当前发布包覆盖：
@@ -47,6 +48,7 @@
 - Linux `aarch64`
 - macOS `x86_64`
 - macOS `aarch64`
+- Windows `x86_64`
 
 只有以下情况才考虑源码构建：
 
@@ -120,6 +122,7 @@ on_failure_command = "notify-send 'repo-auto-puller' \"$REPO_AUTO_PULLER_REPO_NA
 
 - Linux：生成 `~/.config/systemd/user/<service>.service`
 - macOS：生成 `~/Library/LaunchAgents/<service>.plist`
+- Windows：生成 `%APPDATA%\\repo-auto-puller\\<service>.cmd` 并注册 Task Scheduler 登录任务
 
 如果用户只想临时运行，可直接前台运行二进制。
 
@@ -149,6 +152,7 @@ repo-auto-puller uninstall-service --service-name openclawcode-auto-puller
 
 - Linux：`systemctl --user status repo-auto-puller.service`
 - macOS：`launchctl print gui/$(id -u)/repo-auto-puller`
+- Windows：`schtasks /Query /TN repo-auto-puller`
 - 日志文件是否持续写入
 - 至少执行一次真实检查
 - `repo-auto-puller --config ~/.config/repo-auto-puller/config.toml doctor --repo <name>`

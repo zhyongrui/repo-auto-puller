@@ -39,18 +39,32 @@ jobs:
             target: x86_64-unknown-linux-gnu
             packages: ""
             linker: ""
+            archive_type: tar.gz
+            binary_name: repo-auto-puller
           - runner: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             packages: gcc-aarch64-linux-gnu libc6-dev-arm64-cross
             linker: aarch64-linux-gnu-gcc
+            archive_type: tar.gz
+            binary_name: repo-auto-puller
           - runner: macos-latest
             target: x86_64-apple-darwin
             packages: ""
             linker: ""
+            archive_type: tar.gz
+            binary_name: repo-auto-puller
           - runner: macos-latest
             target: aarch64-apple-darwin
             packages: ""
             linker: ""
+            archive_type: tar.gz
+            binary_name: repo-auto-puller
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            packages: ""
+            linker: ""
+            archive_type: zip
+            binary_name: repo-auto-puller.exe
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
@@ -72,15 +86,27 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
         run: cargo build --release -p repo-auto-puller --target ${{ matrix.target }}
 
-      - name: Package archive
+      - name: Package tar archive
+        if: matrix.archive_type == 'tar.gz'
         run: |
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/repo-auto-puller dist/repo-auto-puller
+          cp target/${{ matrix.target }}/release/${{ matrix.binary_name }} dist/repo-auto-puller
           tar -czf repo-auto-puller-${{ matrix.target }}.tar.gz -C dist repo-auto-puller
+
+      - name: Package zip archive
+        if: matrix.archive_type == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" "dist/repo-auto-puller.exe"
+          Compress-Archive -Path "dist/repo-auto-puller.exe" -DestinationPath "repo-auto-puller-${{ matrix.target }}.zip" -Force
 
       - name: Upload release asset
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
-        run: gh release upload "$TAG_NAME" repo-auto-puller-${{ matrix.target }}.tar.gz --clobber
+        shell: bash
+        run: |
+          asset="repo-auto-puller-${{ matrix.target }}.${{ matrix.archive_type }}"
+          gh release upload "$TAG_NAME" "$asset" --clobber

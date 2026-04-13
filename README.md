@@ -28,15 +28,16 @@
 - 平台原生后台服务安装辅助
 - GitHub Actions CI
 - GitHub Releases 构建工作流
-- Linux/macOS 安装脚本
-- 预编译发布包覆盖 Linux `x86_64`/`aarch64` 与 macOS `x86_64`/`aarch64`
+- Linux/macOS Bash 安装脚本
+- Windows PowerShell 安装脚本
+- 预编译发布包覆盖 Linux `x86_64`/`aarch64`、macOS `x86_64`/`aarch64` 与 Windows `x86_64`
 
 ## 对新用户的默认路径
 
 推荐安装方式：
 
 1. 从 GitHub Releases 下载预编译包
-2. 运行 `scripts/install.sh`
+2. Linux/macOS 运行 `scripts/install.sh`，Windows 运行 `scripts/install.ps1`
 3. 运行 `repo-auto-puller init`
 4. 运行 `repo-auto-puller install-service`
 5. 用 `repo-auto-puller doctor`、`status` 和 `check-config` 验证
@@ -60,6 +61,7 @@
 - `examples/config.toml`: 通用配置示例
 - `deploy/systemd/repo-auto-puller.service.template`: 通用 systemd 模板
 - `scripts/install.sh`: Linux/macOS 安装脚本
+- `scripts/install.ps1`: Windows 安装脚本
 - `docs/manual-install.md`: 用户版手册
 - `docs/agent-install.md`: 给 Codex、Claude Code、OpenClaw 等代理的安装使用说明
 - `AGENTS.md`: 给代理看的仓库工作规范与文档导航

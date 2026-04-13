@@ -88,8 +88,8 @@ struct InstallServiceArgs {
     #[arg(long, default_value = "repo-auto-puller")]
     service_name: String,
 
-    #[arg(long, default_value = "~/.local/bin/repo-auto-puller")]
-    binary: PathBuf,
+    #[arg(long)]
+    binary: Option<PathBuf>,
 
     #[arg(long)]
     repo: Vec<String>,
@@ -465,6 +465,52 @@ fn current_timestamp() -> String {
     Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string()
 }
 
+fn home_dir_path() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+}
+
+fn default_log_file_path() -> PathBuf {
+    match std::env::consts::OS {
+        "windows" => home_dir_path()
+            .map(|home| home.join("AppData/Local/repo-auto-puller/repo-auto-puller.log"))
+            .unwrap_or_else(|| {
+                PathBuf::from("~/AppData/Local/repo-auto-puller/repo-auto-puller.log")
+            }),
+        _ => PathBuf::from("~/.local/state/repo-auto-puller/repo-auto-puller.log"),
+    }
+}
+
+fn default_state_file_path() -> PathBuf {
+    match std::env::consts::OS {
+        "windows" => home_dir_path()
+            .map(|home| home.join("AppData/Local/repo-auto-puller/status.json"))
+            .unwrap_or_else(|| PathBuf::from("~/AppData/Local/repo-auto-puller/status.json")),
+        _ => PathBuf::from("~/.local/state/repo-auto-puller/status.json"),
+    }
+}
+
+fn default_history_file_path() -> PathBuf {
+    match std::env::consts::OS {
+        "windows" => home_dir_path()
+            .map(|home| home.join("AppData/Local/repo-auto-puller/history.jsonl"))
+            .unwrap_or_else(|| PathBuf::from("~/AppData/Local/repo-auto-puller/history.jsonl")),
+        _ => PathBuf::from("~/.local/state/repo-auto-puller/history.jsonl"),
+    }
+}
+
+fn default_binary_path() -> PathBuf {
+    match std::env::consts::OS {
+        "windows" => home_dir_path()
+            .map(|home| home.join("AppData/Local/repo-auto-puller/repo-auto-puller.exe"))
+            .unwrap_or_else(|| {
+                PathBuf::from("~/AppData/Local/repo-auto-puller/repo-auto-puller.exe")
+            }),
+        _ => PathBuf::from("~/.local/bin/repo-auto-puller"),
+    }
+}
+
 fn load_config(path: &Path) -> Result<AppConfig> {
     let path = expand_tilde(path);
     let raw = fs::read_to_string(&path)
@@ -557,7 +603,7 @@ fn build_state_store(config: &AppConfig) -> Result<StateStore> {
         .defaults
         .state_file
         .clone()
-        .unwrap_or_else(|| PathBuf::from("~/.local/state/repo-auto-puller/status.json"));
+        .unwrap_or_else(default_state_file_path);
     StateStore::load(&path)
 }
 
@@ -566,7 +612,7 @@ fn build_history_store(config: &AppConfig) -> HistoryStore {
         .defaults
         .history_file
         .clone()
-        .unwrap_or_else(|| PathBuf::from("~/.local/state/repo-auto-puller/history.jsonl"));
+        .unwrap_or_else(default_history_file_path);
     HistoryStore::new(&path)
 }
 
@@ -666,15 +712,16 @@ fn build_managed_repos(
 
 fn expand_tilde(path: &Path) -> PathBuf {
     let raw = path.to_string_lossy();
+    let home = home_dir_path();
     if raw == "~"
-        && let Ok(home) = std::env::var("HOME")
+        && let Some(home) = home.clone()
     {
-        return PathBuf::from(home);
+        return home;
     }
     if let Some(stripped) = raw.strip_prefix("~/")
-        && let Ok(home) = std::env::var("HOME")
+        && let Some(home) = home
     {
-        return PathBuf::from(home).join(stripped);
+        return home.join(stripped);
     }
     path.to_path_buf()
 }
@@ -768,13 +815,9 @@ fn init_config(config_path: &Path, args: &InitArgs) -> Result<()> {
 
     let mut config = load_config_if_exists(config_path)?.unwrap_or_else(|| AppConfig {
         defaults: DefaultsConfig {
-            log_file: Some(PathBuf::from(
-                "~/.local/state/repo-auto-puller/repo-auto-puller.log",
-            )),
-            state_file: Some(PathBuf::from("~/.local/state/repo-auto-puller/status.json")),
-            history_file: Some(PathBuf::from(
-                "~/.local/state/repo-auto-puller/history.jsonl",
-            )),
+            log_file: Some(default_log_file_path()),
+            state_file: Some(default_state_file_path()),
+            history_file: Some(default_history_file_path()),
             verbose: false,
             desktop_notifications: None,
             before_pull_command: None,
@@ -1137,16 +1180,48 @@ fn launchd_plist_path(service_name: &str) -> PathBuf {
     )))
 }
 
+fn windows_task_script_path(service_name: &str) -> PathBuf {
+    let base = std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .or_else(|| home_dir_path().map(|home| home.join("AppData/Roaming")));
+    match base {
+        Some(base) => base
+            .join("repo-auto-puller")
+            .join(format!("{service_name}.cmd")),
+        None => PathBuf::from(format!(
+            "~/AppData/Roaming/repo-auto-puller/{service_name}.cmd"
+        )),
+    }
+}
+
+fn quote_windows_arg(arg: &str) -> String {
+    if arg.is_empty() {
+        return "\"\"".to_owned();
+    }
+    if arg.contains(char::is_whitespace) || arg.contains('"') {
+        format!("\"{}\"", arg.replace('"', "\"\""))
+    } else {
+        arg.to_owned()
+    }
+}
+
+fn render_windows_command_script(program_args: &[String]) -> String {
+    let command = program_args
+        .iter()
+        .map(|arg| quote_windows_arg(arg))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("@echo off\r\n{command}\r\n")
+}
+
 fn install_systemd_service(config_path: &Path, args: &InstallServiceArgs) -> Result<()> {
     let service_name = args.service_name.clone();
     let unit_path = systemd_unit_path(&service_name);
     ensure_parent_dir(&unit_path)?;
 
-    let program_args = build_program_args(
-        &expand_tilde(&args.binary),
-        &expand_tilde(config_path),
-        &args.repo,
-    );
+    let binary = service_binary_path(args.binary.as_deref());
+    let config = expand_tilde(config_path);
+    let program_args = build_program_args(&binary, &config, &args.repo);
     let service = render_systemd_service(&program_args);
     fs::write(&unit_path, service)
         .with_context(|| format!("failed to write {}", unit_path.display()))?;
@@ -1194,6 +1269,32 @@ fn run_launchctl(args: &[&str], context: &str) -> Result<()> {
     Ok(())
 }
 
+fn service_binary_path(binary: Option<&Path>) -> PathBuf {
+    binary
+        .map(expand_tilde)
+        .unwrap_or_else(|| expand_tilde(&default_binary_path()))
+}
+
+fn run_schtasks(args: &[&str], context: &str) -> Result<()> {
+    let output = Command::new("schtasks")
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to execute schtasks {context}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        let detail = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            format!("schtasks {context} exited with status {}", output.status)
+        };
+        bail!("schtasks {context} failed: {detail}");
+    }
+    Ok(())
+}
+
 fn warn_if_command_fails(
     program: &str,
     args: &[&str],
@@ -1226,7 +1327,7 @@ fn install_launchd_service(config_path: &Path, args: &InstallServiceArgs) -> Res
     let plist_path = launchd_plist_path(&service_name);
     ensure_parent_dir(&plist_path)?;
 
-    let binary = expand_tilde(&args.binary);
+    let binary = service_binary_path(args.binary.as_deref());
     let config = expand_tilde(config_path);
     let program_args = build_program_args(&binary, &config, &args.repo);
     let plist = render_launchd_plist(&service_name, &program_args);
@@ -1261,6 +1362,59 @@ fn install_launchd_service(config_path: &Path, args: &InstallServiceArgs) -> Res
                 &format!("kickstart -k {service_target}"),
             )?;
         }
+    }
+
+    Ok(())
+}
+
+fn install_windows_service(config_path: &Path, args: &InstallServiceArgs) -> Result<()> {
+    let service_name = args.service_name.clone();
+    let script_path = windows_task_script_path(&service_name);
+    ensure_parent_dir(&script_path)?;
+
+    let binary = service_binary_path(args.binary.as_deref());
+    let config = expand_tilde(config_path);
+    let program_args = build_program_args(&binary, &config, &args.repo);
+    let script = render_windows_command_script(&program_args);
+    fs::write(&script_path, script)
+        .with_context(|| format!("failed to write {}", script_path.display()))?;
+
+    println!("Wrote Windows task launcher: {}", script_path.display());
+
+    let script_path_string = script_path.display().to_string();
+    run_schtasks(
+        &[
+            "/Create",
+            "/TN",
+            &service_name,
+            "/SC",
+            "ONLOGON",
+            "/RL",
+            "LIMITED",
+            "/TR",
+            &script_path_string,
+            "/F",
+        ],
+        &format!("create task {service_name}"),
+    )?;
+
+    if args.enable {
+        run_schtasks(
+            &["/Change", "/TN", &service_name, "/ENABLE"],
+            &format!("enable task {service_name}"),
+        )?;
+    } else {
+        run_schtasks(
+            &["/Change", "/TN", &service_name, "/DISABLE"],
+            &format!("disable task {service_name}"),
+        )?;
+    }
+
+    if args.start {
+        run_schtasks(
+            &["/Run", "/TN", &service_name],
+            &format!("run task {service_name}"),
+        )?;
     }
 
     Ok(())
@@ -1345,6 +1499,31 @@ fn uninstall_launchd_service(args: &UninstallServiceArgs) -> Result<()> {
     Ok(())
 }
 
+fn uninstall_windows_service(args: &UninstallServiceArgs) -> Result<()> {
+    let service_name = args.service_name.clone();
+    let script_path = windows_task_script_path(&service_name);
+
+    warn_if_command_fails(
+        "schtasks",
+        &["/Delete", "/TN", &service_name, "/F"],
+        "schtasks",
+        &format!("delete task {service_name}"),
+    )?;
+
+    if script_path.exists() {
+        fs::remove_file(&script_path)
+            .with_context(|| format!("failed to remove {}", script_path.display()))?;
+        println!("Removed Windows task launcher: {}", script_path.display());
+    } else {
+        println!(
+            "No Windows task launcher found at {}",
+            script_path.display()
+        );
+    }
+
+    Ok(())
+}
+
 fn install_service(config_path: &Path, args: &InstallServiceArgs) -> Result<()> {
     if args.service_name.trim().is_empty() {
         bail!("--service-name must not be empty");
@@ -1353,6 +1532,7 @@ fn install_service(config_path: &Path, args: &InstallServiceArgs) -> Result<()> 
     match std::env::consts::OS {
         "linux" => install_systemd_service(config_path, args),
         "macos" => install_launchd_service(config_path, args),
+        "windows" => install_windows_service(config_path, args),
         other => {
             bail!("install-service is not supported on this operating system: {other}")
         }
@@ -1367,6 +1547,7 @@ fn uninstall_service(args: &UninstallServiceArgs) -> Result<()> {
     match std::env::consts::OS {
         "linux" => uninstall_systemd_service(args),
         "macos" => uninstall_launchd_service(args),
+        "windows" => uninstall_windows_service(args),
         other => {
             bail!("uninstall-service is not supported on this operating system: {other}")
         }
@@ -1697,6 +1878,25 @@ fn doctor_service(service_name: &str) -> bool {
 
             !(definition_ok && loaded.ok)
         }
+        "windows" => {
+            let script_path = windows_task_script_path(service_name);
+            let definition_ok = script_path.exists();
+            println!("  manager: Task Scheduler");
+            print_doctor_check(
+                "definition",
+                definition_ok,
+                script_path.display().to_string(),
+            );
+
+            let registered = command_probe(
+                "schtasks",
+                &["/Query", "/TN", service_name],
+                "schtasks /Query",
+            );
+            print_doctor_check("registered", registered.ok, registered.detail);
+
+            !(definition_ok && registered.ok)
+        }
         other => {
             println!("  manager: unsupported");
             print_doctor_check(
@@ -1932,9 +2132,10 @@ mod tests {
         HistoryStore, NotificationSettings, QuietHoursConfig, RepositoryConfig, StatusEntry,
         StatusOutput, branch_allowed, build_program_args, decision_blocks_auto_pull,
         effective_report, escape_applescript_text, in_quiet_hours, infer_repo_name,
-        launchd_plist_path, merge_notification_settings, quote_systemd_arg, render_launchd_plist,
-        render_systemd_service, run_desktop_notification, sanitize_repo_name,
-        selected_repositories, systemd_unit_path, upsert_repository, validate_config_schema,
+        launchd_plist_path, merge_notification_settings, quote_systemd_arg, quote_windows_arg,
+        render_launchd_plist, render_systemd_service, render_windows_command_script,
+        run_desktop_notification, sanitize_repo_name, selected_repositories, systemd_unit_path,
+        upsert_repository, validate_config_schema, windows_task_script_path,
     };
     use chrono::NaiveTime;
     use repo_auto_puller_core::{Snapshot, SyncDecision};
@@ -2127,6 +2328,36 @@ mod tests {
     fn builds_launchd_plist_path_from_service_name() {
         let path = launchd_plist_path("repo-auto-puller");
         assert!(path.ends_with("Library/LaunchAgents/repo-auto-puller.plist"));
+    }
+
+    #[test]
+    fn quotes_windows_args_with_spaces() {
+        assert_eq!(
+            quote_windows_arg("C:/Program Files/repo-auto-puller.exe"),
+            "\"C:/Program Files/repo-auto-puller.exe\""
+        );
+        assert_eq!(quote_windows_arg("plain"), "plain");
+    }
+
+    #[test]
+    fn renders_windows_command_script_with_crlf() {
+        let script = render_windows_command_script(&[
+            "C:/Program Files/repo-auto-puller.exe".into(),
+            "--config".into(),
+            "C:/Users/test/AppData/Roaming/repo-auto-puller/config.toml".into(),
+        ]);
+
+        assert!(script.starts_with("@echo off\r\n"));
+        assert!(script.contains("\"C:/Program Files/repo-auto-puller.exe\""));
+        assert!(script.ends_with("\r\n"));
+    }
+
+    #[test]
+    fn builds_windows_task_script_path_from_service_name() {
+        let path = windows_task_script_path("repo-auto-puller");
+        let display = path.display().to_string();
+        assert!(display.contains("repo-auto-puller"));
+        assert!(display.ends_with("repo-auto-puller.cmd"));
     }
 
     #[test]
