@@ -23,7 +23,7 @@
 
 - Rust workspace：`crates/core` + `crates/cli`
 - 配置文件模型：支持多仓库
-- `init`、`status`、`check-config`、`install-service` 子命令
+- `init`、`status`、`check-config`、`install-service`、`uninstall-service` 子命令
 - 失败告警钩子
 - 平台原生后台服务安装辅助
 - GitHub Actions CI
@@ -125,4 +125,10 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml install-service
   --repo my-repo \
   --enable \
   --start
+```
+
+如果要移除这个后台服务：
+
+```bash
+repo-auto-puller uninstall-service --service-name my-repo-auto-puller
 ```

@@ -37,6 +37,7 @@ enum Commands {
     Status(StatusArgs),
     CheckConfig,
     InstallService(InstallServiceArgs),
+    UninstallService(UninstallServiceArgs),
 }
 
 #[derive(Debug, Args)]
@@ -82,6 +83,12 @@ struct InstallServiceArgs {
 
     #[arg(long)]
     start: bool,
+}
+
+#[derive(Debug, Args)]
+struct UninstallServiceArgs {
+    #[arg(long, default_value = "repo-auto-puller")]
+    service_name: String,
 }
 
 #[derive(Clone, Debug, Args)]
@@ -514,11 +521,21 @@ fn render_launchd_plist(label: &str, program_args: &[String]) -> String {
     )
 }
 
+fn systemd_unit_path(service_name: &str) -> PathBuf {
+    expand_tilde(&PathBuf::from(format!(
+        "~/.config/systemd/user/{service_name}.service"
+    )))
+}
+
+fn launchd_plist_path(service_name: &str) -> PathBuf {
+    expand_tilde(&PathBuf::from(format!(
+        "~/Library/LaunchAgents/{service_name}.plist"
+    )))
+}
+
 fn install_systemd_service(config_path: &Path, args: &InstallServiceArgs) -> Result<()> {
     let service_name = args.service_name.clone();
-    let unit_path = expand_tilde(&PathBuf::from(format!(
-        "~/.config/systemd/user/{service_name}.service"
-    )));
+    let unit_path = systemd_unit_path(&service_name);
     ensure_parent_dir(&unit_path)?;
 
     let program_args = build_program_args(
@@ -573,11 +590,36 @@ fn run_launchctl(args: &[&str], context: &str) -> Result<()> {
     Ok(())
 }
 
+fn warn_if_command_fails(
+    program: &str,
+    args: &[&str],
+    display_name: &str,
+    context: &str,
+) -> Result<()> {
+    let output = match Command::new(program).args(args).output() {
+        Ok(output) => output,
+        Err(err) => {
+            eprintln!("warning: failed to execute {display_name} {context}: {err}");
+            return Ok(());
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let suffix = if stderr.is_empty() {
+            "command returned non-zero exit status".to_owned()
+        } else {
+            stderr
+        };
+        eprintln!("warning: {display_name} {context} failed: {suffix}");
+    }
+
+    Ok(())
+}
+
 fn install_launchd_service(config_path: &Path, args: &InstallServiceArgs) -> Result<()> {
     let service_name = args.service_name.clone();
-    let plist_path = expand_tilde(&PathBuf::from(format!(
-        "~/Library/LaunchAgents/{service_name}.plist"
-    )));
+    let plist_path = launchd_plist_path(&service_name);
     ensure_parent_dir(&plist_path)?;
 
     let binary = expand_tilde(&args.binary);
@@ -620,6 +662,85 @@ fn install_launchd_service(config_path: &Path, args: &InstallServiceArgs) -> Res
     Ok(())
 }
 
+fn uninstall_systemd_service(args: &UninstallServiceArgs) -> Result<()> {
+    let service_name = args.service_name.clone();
+    let unit_name = format!("{service_name}.service");
+    let unit_path = systemd_unit_path(&service_name);
+
+    warn_if_command_fails(
+        "systemctl",
+        &["--user", "stop", &unit_name],
+        "systemctl --user",
+        &format!("stop {unit_name}"),
+    )?;
+    warn_if_command_fails(
+        "systemctl",
+        &["--user", "disable", &unit_name],
+        "systemctl --user",
+        &format!("disable {unit_name}"),
+    )?;
+
+    if unit_path.exists() {
+        fs::remove_file(&unit_path)
+            .with_context(|| format!("failed to remove {}", unit_path.display()))?;
+        println!("Removed systemd service file: {}", unit_path.display());
+    } else {
+        println!("No systemd service file found at {}", unit_path.display());
+    }
+
+    warn_if_command_fails(
+        "systemctl",
+        &["--user", "daemon-reload"],
+        "systemctl --user",
+        "daemon-reload",
+    )?;
+    warn_if_command_fails(
+        "systemctl",
+        &["--user", "reset-failed", &unit_name],
+        "systemctl --user",
+        &format!("reset-failed {unit_name}"),
+    )?;
+
+    Ok(())
+}
+
+fn uninstall_launchd_service(args: &UninstallServiceArgs) -> Result<()> {
+    let service_name = args.service_name.clone();
+    let plist_path = launchd_plist_path(&service_name);
+    let domain = launchd_domain()?;
+    let service_target = format!("{domain}/{service_name}");
+    let plist_path_string = plist_path.display().to_string();
+
+    warn_if_command_fails(
+        "launchctl",
+        &["bootout", &service_target],
+        "launchctl",
+        &format!("bootout {service_target}"),
+    )?;
+    warn_if_command_fails(
+        "launchctl",
+        &["bootout", &domain, &plist_path_string],
+        "launchctl",
+        &format!("bootout {domain} {plist_path_string}"),
+    )?;
+    warn_if_command_fails(
+        "launchctl",
+        &["disable", &service_target],
+        "launchctl",
+        &format!("disable {service_target}"),
+    )?;
+
+    if plist_path.exists() {
+        fs::remove_file(&plist_path)
+            .with_context(|| format!("failed to remove {}", plist_path.display()))?;
+        println!("Removed launchd plist: {}", plist_path.display());
+    } else {
+        println!("No launchd plist found at {}", plist_path.display());
+    }
+
+    Ok(())
+}
+
 fn install_service(config_path: &Path, args: &InstallServiceArgs) -> Result<()> {
     if args.service_name.trim().is_empty() {
         bail!("--service-name must not be empty");
@@ -630,6 +751,20 @@ fn install_service(config_path: &Path, args: &InstallServiceArgs) -> Result<()> 
         "macos" => install_launchd_service(config_path, args),
         other => {
             bail!("install-service is not supported on this operating system: {other}")
+        }
+    }
+}
+
+fn uninstall_service(args: &UninstallServiceArgs) -> Result<()> {
+    if args.service_name.trim().is_empty() {
+        bail!("--service-name must not be empty");
+    }
+
+    match std::env::consts::OS {
+        "linux" => uninstall_systemd_service(args),
+        "macos" => uninstall_launchd_service(args),
+        other => {
+            bail!("uninstall-service is not supported on this operating system: {other}")
         }
     }
 }
@@ -873,6 +1008,7 @@ fn main() -> Result<()> {
         Some(Commands::Status(args)) => render_status(&config, &args),
         Some(Commands::CheckConfig) => check_config(&config),
         Some(Commands::InstallService(args)) => install_service(&config, &args),
+        Some(Commands::UninstallService(args)) => uninstall_service(&args),
         None => run(&config, run_args),
     }
 }
@@ -881,8 +1017,8 @@ fn main() -> Result<()> {
 mod tests {
     use super::{
         AppConfig, DefaultsConfig, RepositoryConfig, build_program_args, infer_repo_name,
-        quote_systemd_arg, render_launchd_plist, render_systemd_service, sanitize_repo_name,
-        upsert_repository, validate_config_schema,
+        launchd_plist_path, quote_systemd_arg, render_launchd_plist, render_systemd_service,
+        sanitize_repo_name, systemd_unit_path, upsert_repository, validate_config_schema,
     };
     use std::path::PathBuf;
 
@@ -1027,5 +1163,17 @@ mod tests {
         assert!(plist.contains("<string>/tmp/repo-auto-puller</string>"));
         assert!(plist.contains("<string>openclawcode</string>"));
         assert!(plist.contains("<key>KeepAlive</key>"));
+    }
+
+    #[test]
+    fn builds_systemd_unit_path_from_service_name() {
+        let path = systemd_unit_path("repo-auto-puller");
+        assert!(path.ends_with(".config/systemd/user/repo-auto-puller.service"));
+    }
+
+    #[test]
+    fn builds_launchd_plist_path_from_service_name() {
+        let path = launchd_plist_path("repo-auto-puller");
+        assert!(path.ends_with("Library/LaunchAgents/repo-auto-puller.plist"));
     }
 }

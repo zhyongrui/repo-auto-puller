@@ -176,6 +176,25 @@ launchctl kickstart -k gui/$(id -u)/repo-auto-puller
 tail -f ~/.local/state/repo-auto-puller/repo-auto-puller.log
 ```
 
+### 卸载后台服务
+
+如果你只想移除后台服务定义，而保留二进制和配置文件：
+
+```bash
+repo-auto-puller uninstall-service
+```
+
+如果你安装时用了自定义服务名：
+
+```bash
+repo-auto-puller uninstall-service --service-name my-repo-auto-puller
+```
+
+这个命令会尝试停止并卸载服务，然后删除对应平台上的服务定义文件：
+
+- Linux：删除 `~/.config/systemd/user/<service>.service`
+- macOS：删除 `~/Library/LaunchAgents/<service>.plist`
+
 ## 工具为什么没有自动拉取
 
 以下情况属于正常保护行为：

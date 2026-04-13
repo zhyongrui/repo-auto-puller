@@ -116,6 +116,12 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml install-service
   --start
 ```
 
+如果要回滚用户级后台服务，优先用：
+
+```bash
+repo-auto-puller uninstall-service --service-name openclawcode-auto-puller
+```
+
 ### 5. 验证
 
 安装完成后必须验证：
@@ -183,6 +189,8 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml install-service
 5. 重新看 `status` 和日志
 
 不要在服务运行时直接覆盖二进制文件。
+
+如果用户要彻底移除后台服务，但暂时保留二进制和配置，不要手删 unit/plist，优先使用 `uninstall-service`。
 
 ## 给 Agent 的推荐交付说法
 
