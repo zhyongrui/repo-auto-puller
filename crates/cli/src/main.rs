@@ -148,6 +148,8 @@ struct RepositoryConfig {
     enabled: bool,
     #[serde(default)]
     dry_run: bool,
+    #[serde(default)]
+    allowed_branches: Vec<String>,
     on_failure_command: Option<String>,
 }
 
@@ -192,6 +194,13 @@ struct StatusEntry {
 struct CommandProbe {
     ok: bool,
     detail: String,
+}
+
+struct EffectiveReport {
+    decision: String,
+    message: String,
+    level: &'static str,
+    blocks_auto_pull: bool,
 }
 
 impl Logger {
@@ -271,6 +280,22 @@ fn validate_config_schema(config: &AppConfig) -> Result<()> {
         }
         if repo.interval_seconds <= 0.0 {
             bail!("repository {} has invalid interval_seconds", repo.name);
+        }
+        let mut branches = BTreeSet::new();
+        for branch in &repo.allowed_branches {
+            if branch.trim().is_empty() {
+                bail!(
+                    "repository {} has an empty allowed_branches entry",
+                    repo.name
+                );
+            }
+            if !branches.insert(branch.clone()) {
+                bail!(
+                    "repository {} has duplicate allowed_branches entry: {}",
+                    repo.name,
+                    branch
+                );
+            }
         }
         let raw_path = repo.path.to_string_lossy().to_string();
         if !paths.insert(raw_path.clone()) {
@@ -467,6 +492,7 @@ fn init_config(config_path: &Path, args: &InitArgs) -> Result<()> {
             interval_seconds: args.interval,
             enabled: !args.disabled,
             dry_run: args.dry_run,
+            allowed_branches: Vec::new(),
             on_failure_command: None,
         },
     );
@@ -479,6 +505,7 @@ fn init_config(config_path: &Path, args: &InitArgs) -> Result<()> {
     println!("  interval_seconds: {}", args.interval);
     println!("  enabled: {}", !args.disabled);
     println!("  dry_run: {}", args.dry_run);
+    println!("  allowed_branches: []");
     Ok(())
 }
 
@@ -490,6 +517,36 @@ fn probe_repository(syncer: &RepoSyncer, fetch_remote: bool) -> Result<(Snapshot
     let snapshot = syncer.read_snapshot()?;
     let report = RepoSyncer::report(&snapshot);
     Ok((snapshot, report))
+}
+
+fn branch_allowed(config: &RepositoryConfig, branch: &str) -> bool {
+    config.allowed_branches.is_empty() || config.allowed_branches.iter().any(|item| item == branch)
+}
+
+fn effective_report(
+    config: &RepositoryConfig,
+    snapshot: &Snapshot,
+    report: &SyncReport,
+) -> EffectiveReport {
+    if !branch_allowed(config, &snapshot.branch) {
+        return EffectiveReport {
+            decision: "branch-not-allowed".to_owned(),
+            message: format!(
+                "{} is not in allowed_branches [{}]; skipping auto-pull",
+                snapshot.branch,
+                config.allowed_branches.join(", ")
+            ),
+            level: "WARN",
+            blocks_auto_pull: true,
+        };
+    }
+
+    EffectiveReport {
+        decision: report.decision.as_str().to_owned(),
+        message: report.message.clone(),
+        level: report.level,
+        blocks_auto_pull: decision_blocks_auto_pull(&report.decision),
+    }
 }
 
 fn quote_systemd_arg(arg: &str) -> String {
@@ -903,18 +960,19 @@ fn sync_repo(
     verbose: bool,
 ) -> Result<()> {
     let (snapshot, report) = probe_repository(&managed.syncer, true)?;
+    let effective = effective_report(&managed.config, &snapshot, &report);
 
     if verbose
-        || report.level != "IDLE"
-        || managed.last_message.as_deref() != Some(report.message.as_str())
+        || effective.level != "IDLE"
+        || managed.last_message.as_deref() != Some(effective.message.as_str())
     {
-        logger.log(report.level, &managed.config.name, &report.message)?;
-        managed.last_message = Some(report.message.clone());
+        logger.log(effective.level, &managed.config.name, &effective.message)?;
+        managed.last_message = Some(effective.message.clone());
     }
 
     managed.last_error = None;
 
-    if report.decision != SyncDecision::PullFastForward {
+    if effective.blocks_auto_pull {
         return Ok(());
     }
 
@@ -969,11 +1027,12 @@ fn render_status(config_path: &Path, args: &StatusArgs) -> Result<()> {
     for repo in repos {
         let syncer = RepoSyncer::new(expand_tilde(&repo.config.path))
             .with_context(|| format!("failed to initialize repository {}", repo.config.name))?;
-        let name = repo.config.name;
+        let name = repo.config.name.clone();
         let path = syncer.repo_path().display().to_string();
 
         match probe_repository(&syncer, !args.no_fetch) {
             Ok((snapshot, report)) => {
+                let effective = effective_report(&repo.config, &snapshot, &report);
                 if args.json {
                     output.push(StatusEntry {
                         name,
@@ -983,8 +1042,8 @@ fn render_status(config_path: &Path, args: &StatusArgs) -> Result<()> {
                         ahead: Some(snapshot.ahead),
                         behind: Some(snapshot.behind),
                         dirty: Some(snapshot.dirty),
-                        decision: Some(report.decision.as_str().to_owned()),
-                        message: Some(report.message),
+                        decision: Some(effective.decision),
+                        message: Some(effective.message),
                         error: None,
                     });
                 } else {
@@ -995,8 +1054,8 @@ fn render_status(config_path: &Path, args: &StatusArgs) -> Result<()> {
                     println!("  ahead: {}", snapshot.ahead);
                     println!("  behind: {}", snapshot.behind);
                     println!("  dirty: {}", snapshot.dirty);
-                    println!("  decision: {}", report.decision.as_str());
-                    println!("  message: {}", report.message);
+                    println!("  decision: {}", effective.decision);
+                    println!("  message: {}", effective.message);
                 }
             }
             Err(err) => {
@@ -1158,15 +1217,16 @@ fn render_doctor(config_path: &Path, args: &DoctorArgs) -> Result<()> {
 
         match probe_repository(&syncer, !args.no_fetch) {
             Ok((snapshot, report)) => {
+                let effective = effective_report(&repo.config, &snapshot, &report);
                 print_doctor_check("fetch", true, "remote probe succeeded");
                 println!("  branch: {}", snapshot.branch);
                 println!("  upstream: {}", snapshot.upstream);
                 println!("  ahead: {}", snapshot.ahead);
                 println!("  behind: {}", snapshot.behind);
                 println!("  dirty: {}", snapshot.dirty);
-                println!("  decision: {}", report.decision.as_str());
-                println!("  message: {}", report.message);
-                if decision_blocks_auto_pull(&report.decision) {
+                println!("  decision: {}", effective.decision);
+                println!("  message: {}", effective.message);
+                if effective.blocks_auto_pull {
                     found_issues = true;
                 }
             }
@@ -1299,11 +1359,12 @@ fn main() -> Result<()> {
 mod tests {
     use super::{
         AppConfig, CommandProbe, DefaultsConfig, RepositoryConfig, StatusEntry, StatusOutput,
-        build_program_args, decision_blocks_auto_pull, infer_repo_name, launchd_plist_path,
-        quote_systemd_arg, render_launchd_plist, render_systemd_service, sanitize_repo_name,
-        systemd_unit_path, upsert_repository, validate_config_schema,
+        branch_allowed, build_program_args, decision_blocks_auto_pull, effective_report,
+        infer_repo_name, launchd_plist_path, quote_systemd_arg, render_launchd_plist,
+        render_systemd_service, sanitize_repo_name, systemd_unit_path, upsert_repository,
+        validate_config_schema,
     };
-    use repo_auto_puller_core::SyncDecision;
+    use repo_auto_puller_core::{Snapshot, SyncDecision};
     use std::path::PathBuf;
 
     #[test]
@@ -1332,6 +1393,7 @@ mod tests {
                 interval_seconds: 60.0,
                 enabled: true,
                 dry_run: false,
+                allowed_branches: Vec::new(),
                 on_failure_command: None,
             }],
         };
@@ -1344,6 +1406,7 @@ mod tests {
                 interval_seconds: 30.0,
                 enabled: true,
                 dry_run: true,
+                allowed_branches: vec!["main".into()],
                 on_failure_command: Some("echo failed".into()),
             },
         );
@@ -1352,6 +1415,7 @@ mod tests {
         assert_eq!(config.repositories[0].path, PathBuf::from("/new"));
         assert_eq!(config.repositories[0].interval_seconds, 30.0);
         assert!(config.repositories[0].dry_run);
+        assert_eq!(config.repositories[0].allowed_branches, vec!["main"]);
         assert_eq!(
             config.repositories[0].on_failure_command.as_deref(),
             Some("echo failed")
@@ -1369,6 +1433,7 @@ mod tests {
                     interval_seconds: 60.0,
                     enabled: true,
                     dry_run: false,
+                    allowed_branches: Vec::new(),
                     on_failure_command: None,
                 },
                 RepositoryConfig {
@@ -1377,6 +1442,7 @@ mod tests {
                     interval_seconds: 60.0,
                     enabled: true,
                     dry_run: false,
+                    allowed_branches: Vec::new(),
                     on_failure_command: None,
                 },
             ],
@@ -1500,5 +1566,49 @@ mod tests {
         let json = serde_json::to_string(&output).expect("status output should serialize");
         assert!(json.contains("\"name\":\"openclawcode\""));
         assert!(json.contains("\"error\":\"fetch failed\""));
+    }
+
+    #[test]
+    fn allows_all_branches_when_allowed_branches_is_empty() {
+        let config = RepositoryConfig {
+            name: "openclawcode".into(),
+            path: PathBuf::from("/tmp/openclawcode"),
+            interval_seconds: 60.0,
+            enabled: true,
+            dry_run: false,
+            allowed_branches: Vec::new(),
+            on_failure_command: None,
+        };
+
+        assert!(branch_allowed(&config, "main"));
+        assert!(branch_allowed(&config, "feature/xyz"));
+    }
+
+    #[test]
+    fn overrides_pull_decision_when_branch_is_not_allowed() {
+        let config = RepositoryConfig {
+            name: "openclawcode".into(),
+            path: PathBuf::from("/tmp/openclawcode"),
+            interval_seconds: 60.0,
+            enabled: true,
+            dry_run: false,
+            allowed_branches: vec!["main".into()],
+            on_failure_command: None,
+        };
+        let snapshot = Snapshot {
+            branch: "feature".into(),
+            upstream: "origin/feature".into(),
+            remote: "origin".into(),
+            remote_branch: "feature".into(),
+            ahead: 0,
+            behind: 2,
+            dirty: false,
+        };
+        let report = repo_auto_puller_core::RepoSyncer::report(&snapshot);
+        let effective = effective_report(&config, &snapshot, &report);
+
+        assert_eq!(effective.decision, "branch-not-allowed");
+        assert!(effective.blocks_auto_pull);
+        assert!(effective.message.contains("allowed_branches [main]"));
     }
 }

@@ -8,3 +8,4 @@ path = "/path/to/your/repo"
 interval_seconds = 60
 enabled = true
 dry_run = false
+allowed_branches = ["main"]

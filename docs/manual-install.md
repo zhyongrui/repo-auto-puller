@@ -63,9 +63,12 @@ path = "/path/to/your/repo"
 interval_seconds = 60
 enabled = true
 dry_run = false
+allowed_branches = ["main"]
 ```
 
 如果你想先只做检测、不真的拉取，把 `dry_run` 改成 `true`。
+
+如果你只想允许某些分支自动拉取，可以把 `allowed_branches` 改成你允许的分支列表；留空则表示不限制分支。
 
 你也可以直接让工具帮你生成配置，而不是手写：
 

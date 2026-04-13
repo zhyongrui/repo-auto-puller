@@ -94,6 +94,15 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml init \
   --dry-run
 ```
 
+如果只允许在指定分支上自动拉取，可以在配置里加：
+
+```toml
+[[repositories]]
+name = "my-repo"
+path = "/path/to/your/repo"
+allowed_branches = ["main", "release"]
+```
+
 ## 新增：状态和配置检查
 
 查看仓库当前状态和阻塞原因：
