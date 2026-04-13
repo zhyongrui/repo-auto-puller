@@ -27,6 +27,13 @@ Linux 用户也可以直接使用安装脚本：
 curl -fsSL https://raw.githubusercontent.com/zhyongrui/repo-auto-puller/main/scripts/install.sh | bash
 ```
 
+安装脚本会：
+
+- 下载预编译二进制
+- 放到 `~/.local/bin/repo-auto-puller`
+- 写一个默认配置文件
+- 写一个默认的用户级 systemd 服务模板
+
 ## 配置
 
 把配置文件写到：
@@ -67,6 +74,13 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml init \
   --interval 60
 ```
 
+你也可以在配置里加失败告警钩子：
+
+```toml
+[defaults]
+on_failure_command = "notify-send 'repo-auto-puller' \"$REPO_AUTO_PULLER_REPO_NAME: $REPO_AUTO_PULLER_ERROR\""
+```
+
 ## 启动方式
 
 ### 前台运行
@@ -79,6 +93,18 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml --repo my-repo
 
 ```bash
 repo-auto-puller --config ~/.config/repo-auto-puller/config.toml --repo my-repo --once
+```
+
+### 查看当前状态
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml status --repo my-repo
+```
+
+### 检查配置
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml check-config
 ```
 
 ### 用户级后台服务
@@ -112,6 +138,12 @@ WantedBy=default.target
 ```bash
 systemctl --user daemon-reload
 systemctl --user enable --now repo-auto-puller.service
+```
+
+也可以让工具直接安装这个服务：
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml install-service --enable --start
 ```
 
 查看状态：

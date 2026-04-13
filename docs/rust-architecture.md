@@ -18,6 +18,13 @@ Rust 版本的第一目标不是“功能多”，而是：
 - `RepoAutoPuller` 封装 Git 操作和同步决策
 - `Snapshot` 表示一次仓库状态快照
 
+当前 CLI 已经不仅是 `run` 模式，还承担了几类产品级入口：
+
+- `init`：配置生成/更新
+- `status`：状态探测与原因解释
+- `check-config`：配置校验
+- `install-service`：用户级服务安装辅助
+
 核心流程：
 
 1. 解析参数
@@ -78,6 +85,8 @@ MVP 保守策略如下：
   负责仓库状态、Git 访问、同步决策
 - `repo-auto-puller-cli`
   负责命令行接口
+- `repo-auto-puller-config`
+  负责配置读写、校验、迁移
 - `repo-auto-puller-daemon`
   负责后台常驻、多仓库调度
 - `repo-auto-puller-desktop`
@@ -93,6 +102,7 @@ MVP 保守策略如下：
 - 指标与审计日志
 - 自动安装开机自启
 - 更新检查
+- 告警钩子执行器
 
 ## 依赖选择
 

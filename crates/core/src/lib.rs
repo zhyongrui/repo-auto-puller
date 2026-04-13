@@ -15,12 +15,28 @@ pub struct Snapshot {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepoContext {
+    pub branch: String,
+    pub upstream: String,
+    pub remote: String,
+    pub remote_branch: String,
+    pub dirty: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SyncDecision {
     UpToDate,
     Diverged,
     DirtyBehind,
     AheadOnly,
     PullFastForward,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SyncReport {
+    pub decision: SyncDecision,
+    pub level: &'static str,
+    pub message: String,
 }
 
 #[derive(Clone, Debug)]
@@ -38,7 +54,7 @@ impl RepoSyncer {
         &self.repo
     }
 
-    pub fn read_snapshot(&self) -> Result<Snapshot> {
+    pub fn read_context(&self) -> Result<RepoContext> {
         let branch = self.run_git(&["rev-parse", "--abbrev-ref", "HEAD"])?;
         if branch == "HEAD" {
             bail!("detached HEAD is not supported");
@@ -59,11 +75,23 @@ impl RepoSyncer {
             .ok_or_else(|| anyhow!("unexpected upstream name: {upstream}"))?;
 
         let dirty = !self.run_git(&["status", "--porcelain"])?.is_empty();
+
+        Ok(RepoContext {
+            branch,
+            upstream,
+            remote,
+            remote_branch,
+            dirty,
+        })
+    }
+
+    pub fn read_snapshot(&self) -> Result<Snapshot> {
+        let context = self.read_context()?;
         let counts = self.run_git(&[
             "rev-list",
             "--left-right",
             "--count",
-            &format!("HEAD...{upstream}"),
+            &format!("HEAD...{}", context.upstream),
         ])?;
         let mut parts = counts.split_whitespace();
         let ahead = parts
@@ -78,24 +106,23 @@ impl RepoSyncer {
             .context("failed to parse behind count")?;
 
         Ok(Snapshot {
-            branch,
-            upstream,
-            remote,
-            remote_branch,
+            branch: context.branch,
+            upstream: context.upstream,
+            remote: context.remote,
+            remote_branch: context.remote_branch,
             ahead,
             behind,
-            dirty,
+            dirty: context.dirty,
         })
     }
 
-    pub fn fetch(&self, snapshot: &Snapshot) -> Result<()> {
-        self.run_git(&[
-            "fetch",
-            "--quiet",
-            &snapshot.remote,
-            &snapshot.remote_branch,
-        ])?;
+    pub fn fetch_ref(&self, remote: &str, remote_branch: &str) -> Result<()> {
+        self.run_git(&["fetch", "--quiet", remote, remote_branch])?;
         Ok(())
+    }
+
+    pub fn fetch(&self, snapshot: &Snapshot) -> Result<()> {
+        self.fetch_ref(&snapshot.remote, &snapshot.remote_branch)
     }
 
     pub fn pull_fast_forward(&self, snapshot: &Snapshot) -> Result<()> {
@@ -129,8 +156,9 @@ impl RepoSyncer {
         SyncDecision::PullFastForward
     }
 
-    pub fn describe(snapshot: &Snapshot) -> (&'static str, String) {
-        match Self::sync_decision(snapshot) {
+    pub fn report(snapshot: &Snapshot) -> SyncReport {
+        let decision = Self::sync_decision(snapshot);
+        let (level, message) = match decision {
             SyncDecision::UpToDate => (
                 "IDLE",
                 format!(
@@ -166,7 +194,18 @@ impl RepoSyncer {
                     snapshot.branch, snapshot.upstream, snapshot.behind
                 ),
             ),
+        };
+
+        SyncReport {
+            decision,
+            level,
+            message,
         }
+    }
+
+    pub fn describe(snapshot: &Snapshot) -> (&'static str, String) {
+        let report = Self::report(snapshot);
+        (report.level, report.message)
     }
 
     fn run_git(&self, args: &[&str]) -> Result<String> {
@@ -183,6 +222,18 @@ impl RepoSyncer {
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+}
+
+impl SyncDecision {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SyncDecision::UpToDate => "up-to-date",
+            SyncDecision::Diverged => "diverged",
+            SyncDecision::DirtyBehind => "dirty-behind",
+            SyncDecision::AheadOnly => "ahead-only",
+            SyncDecision::PullFastForward => "pull-fast-forward",
+        }
     }
 }
 

@@ -59,6 +59,7 @@
 - 轮询间隔
 - 是否启用
 - 日志文件路径
+- 可选失败告警命令
 
 除非用户明确要求，不要把用户机器上的临时绝对路径提交回仓库。
 
@@ -77,6 +78,13 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml init \
   --interval 60
 ```
 
+如果需要失败告警，可在配置里加入：
+
+```toml
+[defaults]
+on_failure_command = "notify-send 'repo-auto-puller' \"$REPO_AUTO_PULLER_REPO_NAME: $REPO_AUTO_PULLER_ERROR\""
+```
+
 ### 4. 安装用户服务
 
 优先使用用户级 systemd：
@@ -86,6 +94,22 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml init \
 
 如果用户只想临时运行，可直接前台运行二进制。
 
+优先使用工具内建的服务安装辅助，而不是让用户或代理手写 unit：
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml install-service --enable --start
+```
+
+如果只想安装针对某个仓库的服务：
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml install-service \
+  --service-name openclawcode-auto-puller \
+  --repo openclawcode \
+  --enable \
+  --start
+```
+
 ### 5. 验证
 
 安装完成后必须验证：
@@ -93,6 +117,8 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml init \
 - `systemctl --user status repo-auto-puller.service`
 - 日志文件是否持续写入
 - 至少执行一次真实检查
+- `repo-auto-puller --config ~/.config/repo-auto-puller/config.toml check-config`
+- `repo-auto-puller --config ~/.config/repo-auto-puller/config.toml status --repo <name>`
 
 建议额外确认：
 

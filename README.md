@@ -23,6 +23,8 @@
 
 - Rust workspace：`crates/core` + `crates/cli`
 - 配置文件模型：支持多仓库
+- `init`、`status`、`check-config`、`install-service` 子命令
+- 失败告警钩子
 - systemd 用户服务模板
 - GitHub Actions CI
 - GitHub Releases 构建工作流
@@ -35,7 +37,8 @@
 1. 从 GitHub Releases 下载预编译包
 2. 运行 `scripts/install.sh`
 3. 运行 `repo-auto-puller init`
-4. 启动用户服务
+4. 运行 `repo-auto-puller install-service`
+5. 用 `repo-auto-puller status` 和 `check-config` 验证
 
 如果用户愿意手动安装，也支持完全手动配置。
 
@@ -88,4 +91,36 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml init \
   --name my-repo \
   --interval 30 \
   --dry-run
+```
+
+## 新增：状态和配置检查
+
+查看仓库当前状态和阻塞原因：
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml status --repo my-repo
+```
+
+检查配置是否有效、仓库路径是否能初始化：
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml check-config
+```
+
+## 新增：服务安装辅助
+
+现在可以直接生成并安装用户级 systemd 服务：
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml install-service --enable --start
+```
+
+如果只想让服务盯某一个仓库：
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml install-service \
+  --service-name my-repo-auto-puller \
+  --repo my-repo \
+  --enable \
+  --start
 ```
