@@ -25,10 +25,11 @@
 - 配置文件模型：支持多仓库
 - `init`、`status`、`check-config`、`install-service` 子命令
 - 失败告警钩子
-- systemd 用户服务模板
+- 平台原生后台服务安装辅助
 - GitHub Actions CI
 - GitHub Releases 构建工作流
-- Linux 安装脚本
+- Linux/macOS 安装脚本
+- 预编译发布包覆盖 Linux `x86_64`/`aarch64` 与 macOS `x86_64`/`aarch64`
 
 ## 对新用户的默认路径
 
@@ -58,7 +59,7 @@
 - `crates/cli`: 配置加载、调度、日志、信号处理
 - `examples/config.toml`: 通用配置示例
 - `deploy/systemd/repo-auto-puller.service.template`: 通用 systemd 模板
-- `scripts/install.sh`: Linux 安装脚本
+- `scripts/install.sh`: Linux/macOS 安装脚本
 - `docs/manual-install.md`: 用户版手册
 - `docs/agent-install.md`: 给 Codex、Claude Code、OpenClaw 等代理的安装使用说明
 - `AGENTS.md`: 给代理看的仓库工作规范与文档导航
@@ -109,7 +110,8 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml check-config
 
 ## 新增：服务安装辅助
 
-现在可以直接生成并安装用户级 systemd 服务：
+现在可以直接生成并安装用户级后台服务。
+Linux 上会生成 systemd user service，macOS 上会生成 launchd agent：
 
 ```bash
 repo-auto-puller --config ~/.config/repo-auto-puller/config.toml install-service --enable --start

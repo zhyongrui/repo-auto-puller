@@ -17,10 +17,20 @@ jobs:
         include:
           - runner: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            packages: ""
+            linker: ""
+          - runner: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            packages: gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+            linker: aarch64-linux-gnu-gcc
           - runner: macos-latest
             target: x86_64-apple-darwin
+            packages: ""
+            linker: ""
           - runner: macos-latest
             target: aarch64-apple-darwin
+            packages: ""
+            linker: ""
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
@@ -31,7 +41,15 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Install Linux cross toolchain
+        if: matrix.packages != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.packages }}
+
       - name: Build release binary
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
         run: cargo build --release -p repo-auto-puller --target ${{ matrix.target }}
 
       - name: Package archive

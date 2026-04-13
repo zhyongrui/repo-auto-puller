@@ -28,7 +28,7 @@
 - 操作系统
 - CPU 架构
 - 用户主目录
-- 是否有 `systemd --user`
+- 当前平台可用的用户级服务管理器
 - 目标仓库路径
 - 目标仓库当前 remote 与分支状态
 
@@ -39,6 +39,14 @@
 - 从 GitHub Releases 下载对应平台的压缩包
 - 解压得到 `repo-auto-puller`
 - 安装到 `~/.local/bin/repo-auto-puller`
+- 如果 `curl` 下载偶发失败，而目标机器上有 `gh`，优先回退到 `gh release download`
+
+当前发布包覆盖：
+
+- Linux `x86_64`
+- Linux `aarch64`
+- macOS `x86_64`
+- macOS `aarch64`
 
 只有以下情况才考虑源码构建：
 
@@ -87,14 +95,12 @@ on_failure_command = "notify-send 'repo-auto-puller' \"$REPO_AUTO_PULLER_REPO_NA
 
 ### 4. 安装用户服务
 
-优先使用用户级 systemd：
+优先使用工具内建的服务安装辅助，而不是让用户或代理手写服务定义：
 
-- 服务文件路径：`~/.config/systemd/user/repo-auto-puller.service`
-- 启动方式：`systemctl --user enable --now repo-auto-puller.service`
+- Linux：生成 `~/.config/systemd/user/<service>.service`
+- macOS：生成 `~/Library/LaunchAgents/<service>.plist`
 
 如果用户只想临时运行，可直接前台运行二进制。
-
-优先使用工具内建的服务安装辅助，而不是让用户或代理手写 unit：
 
 ```bash
 repo-auto-puller --config ~/.config/repo-auto-puller/config.toml install-service --enable --start
@@ -114,7 +120,8 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml install-service
 
 安装完成后必须验证：
 
-- `systemctl --user status repo-auto-puller.service`
+- Linux：`systemctl --user status repo-auto-puller.service`
+- macOS：`launchctl print gui/$(id -u)/repo-auto-puller`
 - 日志文件是否持续写入
 - 至少执行一次真实检查
 - `repo-auto-puller --config ~/.config/repo-auto-puller/config.toml check-config`
@@ -142,6 +149,7 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml install-service
 下面这些不是假设，而是在这台机器上真实遇到过的情况：
 
 - 普通用户不应被要求先安装 Rust。
+- 当前发布链路的目标平台是 Linux `x86_64`/`aarch64` 和 macOS `x86_64`/`aarch64`。
 - `repo-auto-puller` 已在这台机器上成功编译通过，`cargo test`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo build --release -p repo-auto-puller` 都已通过。
 - 这台机器上已经把 `repo-auto-puller` 实际部署到了 `openclawcode` 仓库上。
 - 当前机器上的实例化部署路径是：

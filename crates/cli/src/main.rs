@@ -453,37 +453,84 @@ fn quote_systemd_arg(arg: &str) -> String {
     }
 }
 
-fn install_service(config_path: &Path, args: &InstallServiceArgs) -> Result<()> {
-    if args.service_name.trim().is_empty() {
-        bail!("--service-name must not be empty");
+fn build_program_args(binary: &Path, config: &Path, repos: &[String]) -> Vec<String> {
+    let mut program_args = vec![
+        binary.display().to_string(),
+        "--config".to_owned(),
+        config.display().to_string(),
+    ];
+    for repo in repos {
+        program_args.push("--repo".to_owned());
+        program_args.push(repo.clone());
     }
-    let service_name = args.service_name.clone();
+    program_args
+}
 
+fn render_systemd_service(program_args: &[String]) -> String {
+    let exec_start = program_args
+        .iter()
+        .map(|arg| quote_systemd_arg(arg))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "[Unit]\nDescription=Repo Auto Puller\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart={exec_start}\nRestart=always\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n"
+    )
+}
+
+fn escape_xml(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn render_launchd_plist(label: &str, program_args: &[String]) -> String {
+    let args = program_args
+        .iter()
+        .map(|arg| format!("    <string>{}</string>", escape_xml(arg)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{}</string>
+  <key>ProgramArguments</key>
+  <array>
+{}
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+</dict>
+</plist>
+"#,
+        escape_xml(label),
+        args
+    )
+}
+
+fn install_systemd_service(config_path: &Path, args: &InstallServiceArgs) -> Result<()> {
+    let service_name = args.service_name.clone();
     let unit_path = expand_tilde(&PathBuf::from(format!(
         "~/.config/systemd/user/{service_name}.service"
     )));
     ensure_parent_dir(&unit_path)?;
 
-    let binary = expand_tilde(&args.binary);
-    let config = expand_tilde(config_path);
-    let mut exec_args = vec![
-        quote_systemd_arg(&binary.display().to_string()),
-        "--config".to_owned(),
-        quote_systemd_arg(&config.display().to_string()),
-    ];
-    for repo in &args.repo {
-        exec_args.push("--repo".to_owned());
-        exec_args.push(quote_systemd_arg(repo));
-    }
-
-    let service = format!(
-        "[Unit]\nDescription=Repo Auto Puller\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart={}\nRestart=always\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n",
-        exec_args.join(" "),
+    let program_args = build_program_args(
+        &expand_tilde(&args.binary),
+        &expand_tilde(config_path),
+        &args.repo,
     );
+    let service = render_systemd_service(&program_args);
     fs::write(&unit_path, service)
         .with_context(|| format!("failed to write {}", unit_path.display()))?;
 
-    println!("Wrote service file: {}", unit_path.display());
+    println!("Wrote systemd service file: {}", unit_path.display());
 
     if args.enable || args.start {
         run_systemctl_user(["daemon-reload"])?;
@@ -496,6 +543,95 @@ fn install_service(config_path: &Path, args: &InstallServiceArgs) -> Result<()> 
     }
 
     Ok(())
+}
+
+fn launchd_domain() -> Result<String> {
+    let output = Command::new("id")
+        .arg("-u")
+        .output()
+        .context("failed to execute id -u")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        bail!("id -u failed: {stderr}");
+    }
+    let uid = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if uid.is_empty() {
+        bail!("id -u returned an empty uid");
+    }
+    Ok(format!("gui/{uid}"))
+}
+
+fn run_launchctl(args: &[&str], context: &str) -> Result<()> {
+    let output = Command::new("launchctl")
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to execute launchctl {context}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        bail!("launchctl {context} failed: {stderr}");
+    }
+    Ok(())
+}
+
+fn install_launchd_service(config_path: &Path, args: &InstallServiceArgs) -> Result<()> {
+    let service_name = args.service_name.clone();
+    let plist_path = expand_tilde(&PathBuf::from(format!(
+        "~/Library/LaunchAgents/{service_name}.plist"
+    )));
+    ensure_parent_dir(&plist_path)?;
+
+    let binary = expand_tilde(&args.binary);
+    let config = expand_tilde(config_path);
+    let program_args = build_program_args(&binary, &config, &args.repo);
+    let plist = render_launchd_plist(&service_name, &program_args);
+    fs::write(&plist_path, plist)
+        .with_context(|| format!("failed to write {}", plist_path.display()))?;
+
+    println!("Wrote launchd plist: {}", plist_path.display());
+
+    if args.enable || args.start {
+        let domain = launchd_domain()?;
+        let plist_path_string = plist_path.display().to_string();
+        let service_target = format!("{domain}/{service_name}");
+        let _ = Command::new("launchctl")
+            .args(["bootout", &service_target])
+            .output();
+        let _ = Command::new("launchctl")
+            .args(["bootout", &domain, &plist_path_string])
+            .output();
+        run_launchctl(
+            &["bootstrap", &domain, &plist_path_string],
+            &format!("bootstrap {domain} {plist_path_string}"),
+        )?;
+        if args.enable {
+            run_launchctl(
+                &["enable", &service_target],
+                &format!("enable {service_target}"),
+            )?;
+        }
+        if args.start {
+            run_launchctl(
+                &["kickstart", "-k", &service_target],
+                &format!("kickstart -k {service_target}"),
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn install_service(config_path: &Path, args: &InstallServiceArgs) -> Result<()> {
+    if args.service_name.trim().is_empty() {
+        bail!("--service-name must not be empty");
+    }
+
+    match std::env::consts::OS {
+        "linux" => install_systemd_service(config_path, args),
+        "macos" => install_launchd_service(config_path, args),
+        other => {
+            bail!("install-service is not supported on this operating system: {other}")
+        }
+    }
 }
 
 fn run_systemctl_user<const N: usize>(args: [&str; N]) -> Result<()> {
@@ -744,8 +880,9 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppConfig, DefaultsConfig, RepositoryConfig, infer_repo_name, quote_systemd_arg,
-        sanitize_repo_name, upsert_repository, validate_config_schema,
+        AppConfig, DefaultsConfig, RepositoryConfig, build_program_args, infer_repo_name,
+        quote_systemd_arg, render_launchd_plist, render_systemd_service, sanitize_repo_name,
+        upsert_repository, validate_config_schema,
     };
     use std::path::PathBuf;
 
@@ -836,5 +973,59 @@ mod tests {
             "\"/tmp/path with spaces\""
         );
         assert_eq!(quote_systemd_arg("/tmp/plain"), "/tmp/plain");
+    }
+
+    #[test]
+    fn builds_program_args_with_repo_filters() {
+        let args = build_program_args(
+            PathBuf::from("/tmp/repo-auto-puller").as_path(),
+            PathBuf::from("/tmp/config.toml").as_path(),
+            &["openclawcode".into(), "docs".into()],
+        );
+
+        assert_eq!(
+            args,
+            vec![
+                "/tmp/repo-auto-puller",
+                "--config",
+                "/tmp/config.toml",
+                "--repo",
+                "openclawcode",
+                "--repo",
+                "docs",
+            ]
+        );
+    }
+
+    #[test]
+    fn renders_systemd_service_with_quoted_exec_start() {
+        let service = render_systemd_service(&[
+            "/tmp/repo auto puller".into(),
+            "--config".into(),
+            "/tmp/config with spaces.toml".into(),
+        ]);
+
+        assert!(service.contains(
+            "ExecStart=\"/tmp/repo auto puller\" --config \"/tmp/config with spaces.toml\""
+        ));
+    }
+
+    #[test]
+    fn renders_launchd_plist_with_repo_filters() {
+        let plist = render_launchd_plist(
+            "repo-auto-puller",
+            &[
+                "/tmp/repo-auto-puller".into(),
+                "--config".into(),
+                "/tmp/config.toml".into(),
+                "--repo".into(),
+                "openclawcode".into(),
+            ],
+        );
+
+        assert!(plist.contains("<string>repo-auto-puller</string>"));
+        assert!(plist.contains("<string>/tmp/repo-auto-puller</string>"));
+        assert!(plist.contains("<string>openclawcode</string>"));
+        assert!(plist.contains("<key>KeepAlive</key>"));
     }
 }

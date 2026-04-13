@@ -12,6 +12,13 @@
 - 还没有适合你平台的发布包
 - 你准备参与开发
 
+当前预编译发布包覆盖：
+
+- Linux `x86_64`
+- Linux `aarch64`
+- macOS `x86_64`
+- macOS `aarch64`
+
 ## 推荐安装方式
 
 ### 方式 A：用预编译二进制
@@ -21,7 +28,7 @@
 3. 解压出 `repo-auto-puller`
 4. 放到 `~/.local/bin/repo-auto-puller`
 
-Linux 用户也可以直接使用安装脚本：
+Linux 和 macOS 用户都可以直接使用安装脚本：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zhyongrui/repo-auto-puller/main/scripts/install.sh | bash
@@ -32,7 +39,8 @@ curl -fsSL https://raw.githubusercontent.com/zhyongrui/repo-auto-puller/main/scr
 - 下载预编译二进制
 - 放到 `~/.local/bin/repo-auto-puller`
 - 写一个默认配置文件
-- 写一个默认的用户级 systemd 服务模板
+- 提示你用 `install-service` 安装对应平台的后台服务
+- 如果 `curl` 因网络/TLS 抖动失败，且系统已安装 `gh`，会自动回退到 GitHub CLI 下载
 
 ## 配置
 
@@ -109,47 +117,57 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml check-config
 
 ### 用户级后台服务
 
-把服务文件放到：
+`install-service` 会按当前系统生成对应的后台服务：
 
-```bash
-~/.config/systemd/user/repo-auto-puller.service
-```
+- Linux：systemd user service
+- macOS：launchd agent
 
-服务文件示例：
-
-```ini
-[Unit]
-Description=Repo Auto Puller
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=%h/.local/bin/repo-auto-puller --config %h/.config/repo-auto-puller/config.toml
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=default.target
-```
-
-启用：
-
-```bash
-systemctl --user daemon-reload
-systemctl --user enable --now repo-auto-puller.service
-```
-
-也可以让工具直接安装这个服务：
+先执行：
 
 ```bash
 repo-auto-puller --config ~/.config/repo-auto-puller/config.toml install-service --enable --start
+```
+
+#### Linux
+
+服务文件会写到：
+
+```bash
+~/.config/systemd/user/repo-auto-puller.service
 ```
 
 查看状态：
 
 ```bash
 systemctl --user status repo-auto-puller.service
+```
+
+看日志：
+
+```bash
+tail -f ~/.local/state/repo-auto-puller/repo-auto-puller.log
+```
+
+#### macOS
+
+plist 会写到：
+
+```bash
+~/Library/LaunchAgents/repo-auto-puller.plist
+```
+
+查看服务是否已加载：
+
+```bash
+launchctl print gui/$(id -u)/repo-auto-puller
+```
+
+重新加载：
+
+```bash
+launchctl bootout gui/$(id -u)/repo-auto-puller 2>/dev/null || true
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/repo-auto-puller.plist
+launchctl kickstart -k gui/$(id -u)/repo-auto-puller
 ```
 
 看日志：
