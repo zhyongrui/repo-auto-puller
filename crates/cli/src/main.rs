@@ -82,9 +82,8 @@ impl Logger {
 
     fn file(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("failed to create log directory {}", parent.display())
-            })?;
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create log directory {}", parent.display()))?;
         }
         let file = OpenOptions::new()
             .create(true)
@@ -171,15 +170,13 @@ fn build_managed_repos(config: AppConfig, cli: &Cli) -> Result<(Logger, bool, Ve
 
 fn expand_tilde(path: &Path) -> PathBuf {
     let raw = path.to_string_lossy();
-    if raw == "~" {
-        if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home);
-        }
+    if raw == "~" && let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home);
     }
-    if let Some(stripped) = raw.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home).join(stripped);
-        }
+    if let Some(stripped) = raw.strip_prefix("~/")
+        && let Ok(home) = std::env::var("HOME")
+    {
+        return PathBuf::from(home).join(stripped);
     }
     path.to_path_buf()
 }
@@ -283,7 +280,8 @@ fn main() -> Result<()> {
                 logger.log("ERROR", &managed.config.name, err.to_string())?;
             }
 
-            managed.next_run_at = Instant::now() + Duration::from_secs_f64(managed.config.interval_seconds);
+            managed.next_run_at =
+                Instant::now() + Duration::from_secs_f64(managed.config.interval_seconds);
             earliest_next = Some(match earliest_next {
                 Some(existing) => existing.min(managed.next_run_at),
                 None => managed.next_run_at,

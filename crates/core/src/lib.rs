@@ -55,10 +55,16 @@ impl RepoSyncer {
 
         let (remote, remote_branch) = upstream
             .split_once('/')
+            .map(|(remote, branch)| (remote.to_owned(), branch.to_owned()))
             .ok_or_else(|| anyhow!("unexpected upstream name: {upstream}"))?;
 
         let dirty = !self.run_git(&["status", "--porcelain"])?.is_empty();
-        let counts = self.run_git(&["rev-list", "--left-right", "--count", &format!("HEAD...{upstream}")])?;
+        let counts = self.run_git(&[
+            "rev-list",
+            "--left-right",
+            "--count",
+            &format!("HEAD...{upstream}"),
+        ])?;
         let mut parts = counts.split_whitespace();
         let ahead = parts
             .next()
@@ -74,8 +80,8 @@ impl RepoSyncer {
         Ok(Snapshot {
             branch,
             upstream,
-            remote: remote.to_owned(),
-            remote_branch: remote_branch.to_owned(),
+            remote,
+            remote_branch,
             ahead,
             behind,
             dirty,
@@ -83,7 +89,12 @@ impl RepoSyncer {
     }
 
     pub fn fetch(&self, snapshot: &Snapshot) -> Result<()> {
-        self.run_git(&["fetch", "--quiet", &snapshot.remote, &snapshot.remote_branch])?;
+        self.run_git(&[
+            "fetch",
+            "--quiet",
+            &snapshot.remote,
+            &snapshot.remote_branch,
+        ])?;
         Ok(())
     }
 
@@ -122,7 +133,10 @@ impl RepoSyncer {
         match Self::sync_decision(snapshot) {
             SyncDecision::UpToDate => (
                 "IDLE",
-                format!("{} is up to date with {}", snapshot.branch, snapshot.upstream),
+                format!(
+                    "{} is up to date with {}",
+                    snapshot.branch, snapshot.upstream
+                ),
             ),
             SyncDecision::Diverged => (
                 "WARN",
@@ -211,7 +225,10 @@ mod tests {
             behind: 2,
             dirty: true,
         };
-        assert_eq!(RepoSyncer::sync_decision(&snapshot), SyncDecision::DirtyBehind);
+        assert_eq!(
+            RepoSyncer::sync_decision(&snapshot),
+            SyncDecision::DirtyBehind
+        );
     }
 
     #[test]
