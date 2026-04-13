@@ -23,7 +23,7 @@
 
 - Rust workspace：`crates/core` + `crates/cli`
 - 配置文件模型：支持多仓库
-- `init`、`status`、`check-config`、`doctor`、`install-service`、`uninstall-service` 子命令
+- `init`、`status`、`dashboard`、`check-config`、`doctor`、`install-service`、`uninstall-service` 子命令
 - 失败告警钩子
 - 平台原生后台服务安装辅助
 - GitHub Actions CI
@@ -178,6 +178,12 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml status --repo m
 
 ```bash
 repo-auto-puller --config ~/.config/repo-auto-puller/config.toml status --repo my-repo --json
+```
+
+如果你想给普通用户一个不看终端的入口，可以启动本地只读状态页：
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml dashboard --listen 127.0.0.1:8787
 ```
 
 检查配置是否有效、仓库路径是否能初始化：

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -35,6 +36,7 @@ struct Cli {
 enum Commands {
     Init(InitArgs),
     Status(StatusArgs),
+    Dashboard(DashboardArgs),
     CheckConfig,
     Doctor(DoctorArgs),
     InstallService(InstallServiceArgs),
@@ -69,6 +71,18 @@ struct StatusArgs {
 
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Debug, Args)]
+struct DashboardArgs {
+    #[arg(long, default_value = "127.0.0.1:8787")]
+    listen: String,
+
+    #[arg(long)]
+    repo: Vec<String>,
+
+    #[arg(long, default_value_t = 15)]
+    refresh_seconds: u64,
 }
 
 #[derive(Debug, Args)]
@@ -1830,6 +1844,249 @@ fn render_status(config_path: &Path, args: &StatusArgs) -> Result<()> {
     Ok(())
 }
 
+fn escape_html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn render_dashboard_html(
+    selected: &[SelectedRepo],
+    state: &PersistedState,
+    refresh_seconds: u64,
+) -> String {
+    let mut cards = String::new();
+
+    for repo in selected {
+        let persisted = state.repositories.get(&repo.config.name);
+        let status_class = match persisted.map(|entry| entry.level.as_str()) {
+            Some("ERROR") => "error",
+            Some("WARN") => "warn",
+            Some("INFO") => "info",
+            Some("IDLE") => "idle",
+            _ => "unknown",
+        };
+        let summary = match persisted {
+            Some(entry) => entry
+                .error
+                .as_deref()
+                .or(entry.message.as_deref())
+                .unwrap_or("No details recorded yet"),
+            None => "No sync recorded yet",
+        };
+        let branch = persisted
+            .and_then(|entry| entry.branch.as_deref())
+            .unwrap_or("-");
+        let upstream = persisted
+            .and_then(|entry| entry.upstream.as_deref())
+            .unwrap_or("-");
+        let ahead = persisted
+            .and_then(|entry| entry.ahead)
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_owned());
+        let behind = persisted
+            .and_then(|entry| entry.behind)
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_owned());
+        let dirty = persisted
+            .and_then(|entry| entry.dirty)
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_owned());
+        let updated_at = persisted
+            .map(|entry| entry.updated_at.as_str())
+            .unwrap_or("Never");
+
+        cards.push_str(&format!(
+            r#"<section class="card {status_class}">
+<h2>{name}</h2>
+<p class="summary">{summary}</p>
+<dl>
+<div><dt>Path</dt><dd>{path}</dd></div>
+<div><dt>Last Sync</dt><dd>{updated_at}</dd></div>
+<div><dt>Branch</dt><dd>{branch}</dd></div>
+<div><dt>Upstream</dt><dd>{upstream}</dd></div>
+<div><dt>Ahead</dt><dd>{ahead}</dd></div>
+<div><dt>Behind</dt><dd>{behind}</dd></div>
+<div><dt>Dirty</dt><dd>{dirty}</dd></div>
+</dl>
+</section>
+"#,
+            status_class = status_class,
+            name = escape_html(&repo.config.name),
+            summary = escape_html(summary),
+            path = escape_html(&expand_tilde(&repo.config.path).display().to_string()),
+            updated_at = escape_html(updated_at),
+            branch = escape_html(branch),
+            upstream = escape_html(upstream),
+            ahead = escape_html(&ahead),
+            behind = escape_html(&behind),
+            dirty = escape_html(&dirty),
+        ));
+    }
+
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="{refresh_seconds}">
+<title>Repo Auto Puller Dashboard</title>
+<style>
+:root {{
+  color-scheme: light;
+  --bg: #f4efe7;
+  --panel: rgba(255, 252, 246, 0.92);
+  --text: #1e1c18;
+  --muted: #6f685f;
+  --border: rgba(40, 34, 24, 0.12);
+  --error: #a11d33;
+  --warn: #b96a00;
+  --info: #155e75;
+  --idle: #1f6f43;
+}}
+body {{
+  margin: 0;
+  font-family: "Georgia", "Times New Roman", serif;
+  background:
+    radial-gradient(circle at top left, rgba(196, 120, 72, 0.16), transparent 38%),
+    linear-gradient(135deg, #efe7da, var(--bg));
+  color: var(--text);
+}}
+main {{
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 40px 20px 60px;
+}}
+h1 {{
+  margin: 0 0 10px;
+  font-size: clamp(2rem, 4vw, 3.4rem);
+}}
+.lead {{
+  margin: 0 0 30px;
+  color: var(--muted);
+  max-width: 60ch;
+}}
+.grid {{
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 18px;
+}}
+.card {{
+  border: 1px solid var(--border);
+  border-left-width: 6px;
+  border-radius: 18px;
+  padding: 18px;
+  background: var(--panel);
+  box-shadow: 0 18px 45px rgba(33, 27, 18, 0.08);
+  backdrop-filter: blur(8px);
+}}
+.card.error {{ border-left-color: var(--error); }}
+.card.warn {{ border-left-color: var(--warn); }}
+.card.info {{ border-left-color: var(--info); }}
+.card.idle {{ border-left-color: var(--idle); }}
+.card.unknown {{ border-left-color: var(--muted); }}
+.card h2 {{
+  margin: 0 0 10px;
+  font-size: 1.35rem;
+}}
+.summary {{
+  margin: 0 0 16px;
+  color: var(--muted);
+  min-height: 3em;
+}}
+dl {{
+  margin: 0;
+  display: grid;
+  gap: 10px;
+}}
+dl div {{
+  display: grid;
+  gap: 4px;
+}}
+dt {{
+  font-size: 0.82rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}}
+dd {{
+  margin: 0;
+  word-break: break-word;
+}}
+</style>
+</head>
+<body>
+<main>
+<h1>Repo Auto Puller</h1>
+<p class="lead">Read-only dashboard for recent sync state. Refreshes every {refresh_seconds} seconds.</p>
+<div class="grid">
+{cards}</div>
+</main>
+</body>
+</html>
+"#,
+        refresh_seconds = refresh_seconds.max(5),
+        cards = cards,
+    )
+}
+
+fn serve_dashboard(config_path: &Path, args: &DashboardArgs) -> Result<()> {
+    let config = load_config(config_path)?;
+    let selected = selected_repositories(&config, &args.repo)?;
+    let listener = TcpListener::bind(&args.listen)
+        .with_context(|| format!("failed to bind dashboard listener on {}", args.listen))?;
+
+    println!("Dashboard listening on http://{}", args.listen);
+
+    for stream in listener.incoming() {
+        let mut stream = match stream {
+            Ok(stream) => stream,
+            Err(err) => {
+                eprintln!("warning: failed to accept dashboard connection: {err}");
+                continue;
+            }
+        };
+
+        let mut buffer = [0_u8; 1024];
+        let bytes_read = stream.read(&mut buffer).unwrap_or(0);
+        let request = String::from_utf8_lossy(&buffer[..bytes_read]);
+        let request_line = request.lines().next().unwrap_or_default();
+        let state_store = build_state_store(&config)?;
+        let (status_line, body) =
+            if request_line.starts_with("GET / ") || request_line.starts_with("GET /HTTP") {
+                (
+                    "HTTP/1.1 200 OK",
+                    render_dashboard_html(&selected, &state_store.state, args.refresh_seconds),
+                )
+            } else if request_line.starts_with("GET /healthz") {
+                ("HTTP/1.1 200 OK", "ok".to_owned())
+            } else {
+                ("HTTP/1.1 404 Not Found", "not found".to_owned())
+            };
+        let content_type = if status_line.contains("200 OK") && body.starts_with("<!DOCTYPE html>")
+        {
+            "text/html; charset=utf-8"
+        } else {
+            "text/plain; charset=utf-8"
+        };
+        let response = format!(
+            "{status_line}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream
+            .write_all(response.as_bytes())
+            .context("failed to write dashboard response")?;
+        stream
+            .flush()
+            .context("failed to flush dashboard response")?;
+    }
+
+    Ok(())
+}
+
 fn doctor_service(service_name: &str) -> bool {
     println!("Service:");
     match std::env::consts::OS {
@@ -2117,6 +2374,7 @@ fn main() -> Result<()> {
     match command {
         Some(Commands::Init(args)) => init_config(&config, &args),
         Some(Commands::Status(args)) => render_status(&config, &args),
+        Some(Commands::Dashboard(args)) => serve_dashboard(&config, &args),
         Some(Commands::CheckConfig) => check_config(&config),
         Some(Commands::Doctor(args)) => render_doctor(&config, &args),
         Some(Commands::InstallService(args)) => install_service(&config, &args),
@@ -2129,13 +2387,14 @@ fn main() -> Result<()> {
 mod tests {
     use super::{
         AppConfig, CommandProbe, DefaultsConfig, DesktopNotificationsConfig, HistoryRecord,
-        HistoryStore, NotificationSettings, QuietHoursConfig, RepositoryConfig, StatusEntry,
-        StatusOutput, branch_allowed, build_program_args, decision_blocks_auto_pull,
-        effective_report, escape_applescript_text, in_quiet_hours, infer_repo_name,
-        launchd_plist_path, merge_notification_settings, quote_systemd_arg, quote_windows_arg,
-        render_launchd_plist, render_systemd_service, render_windows_command_script,
-        run_desktop_notification, sanitize_repo_name, selected_repositories, systemd_unit_path,
-        upsert_repository, validate_config_schema, windows_task_script_path,
+        HistoryStore, NotificationSettings, PersistedRepoState, PersistedState, QuietHoursConfig,
+        RepositoryConfig, StatusEntry, StatusOutput, branch_allowed, build_program_args,
+        decision_blocks_auto_pull, effective_report, escape_applescript_text, in_quiet_hours,
+        infer_repo_name, launchd_plist_path, merge_notification_settings, quote_systemd_arg,
+        quote_windows_arg, render_dashboard_html, render_launchd_plist, render_systemd_service,
+        render_windows_command_script, run_desktop_notification, sanitize_repo_name,
+        selected_repositories, systemd_unit_path, upsert_repository, validate_config_schema,
+        windows_task_script_path,
     };
     use chrono::NaiveTime;
     use repo_auto_puller_core::{Snapshot, SyncDecision};
@@ -2712,5 +2971,43 @@ path = "/tmp/openclawcode"
         let _ = fs::remove_file(script_path);
         let _ = fs::remove_file(log_path);
         let _ = fs::remove_dir(dir);
+    }
+
+    #[test]
+    fn renders_dashboard_html_with_recent_state() {
+        let config: AppConfig = toml::from_str(
+            r#"
+[[repositories]]
+name = "openclawcode"
+path = "/tmp/openclawcode"
+"#,
+        )
+        .expect("config should parse");
+        let selected = selected_repositories(&config, &[]).expect("repo should be selected");
+        let mut state = PersistedState::default();
+        state.repositories.insert(
+            "openclawcode".into(),
+            PersistedRepoState {
+                name: "openclawcode".into(),
+                path: "/tmp/openclawcode".into(),
+                updated_at: "2026-04-13T17:00:00+00:00".into(),
+                level: "ERROR".into(),
+                branch: Some("main".into()),
+                upstream: Some("origin/main".into()),
+                ahead: Some(0),
+                behind: Some(2),
+                dirty: Some(false),
+                decision: Some("pull-fast-forward".into()),
+                message: Some("main is behind origin/main by 2 commit(s)".into()),
+                error: Some("fetch failed".into()),
+            },
+        );
+
+        let html = render_dashboard_html(&selected, &state, 15);
+
+        assert!(html.contains("Repo Auto Puller"));
+        assert!(html.contains("openclawcode"));
+        assert!(html.contains("fetch failed"));
+        assert!(html.contains("2026-04-13T17:00:00+00:00"));
     }
 }

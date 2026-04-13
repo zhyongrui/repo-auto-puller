@@ -187,6 +187,20 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml status --repo m
 repo-auto-puller --config ~/.config/repo-auto-puller/config.toml status --repo my-repo --json
 ```
 
+### 打开只读状态页
+
+如果你想在浏览器里看最近状态，而不是一直盯终端：
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml dashboard --listen 127.0.0.1:8787
+```
+
+然后打开：
+
+```bash
+http://127.0.0.1:8787
+```
+
 ### 运行诊断
 
 安装好配置和服务后，推荐再跑一遍：
