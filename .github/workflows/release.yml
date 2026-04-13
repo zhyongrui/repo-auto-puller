@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - runner: macos-latest
+            target: x86_64-apple-darwin
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release -p repo-auto-puller --target ${{ matrix.target }}
+
+      - name: Package archive
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/repo-auto-puller dist/repo-auto-puller
+          tar -czf repo-auto-puller-${{ matrix.target }}.tar.gz -C dist repo-auto-puller
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: repo-auto-puller-${{ matrix.target }}.tar.gz

@@ -1,83 +1,71 @@
 # Repo Auto Puller
 
-`repo-auto-puller` 是一个本地优先的 Git 自动拉取产品原型。它已经按你的当前环境接到了 `openclawcode` 仓库上，同时也具备继续扩展到多仓库的基础能力。
+`repo-auto-puller` 是一个本地优先的 Git 自动拉取工具。它会在后台检查你本机上的仓库；当远端分支有新提交、且本地可以安全 fast-forward 时，它会自动拉取。
 
-当前项目已经完成这几件事：
+正常用户不应该被要求先装 Rust。产品的默认交付方式应该是：
 
-- Rust workspace 结构，拆成 `core + cli`
-- `config.toml` 配置文件
-- 多仓库配置模型
-- `openclawcode` 的实际接入配置
+- 用户下载预编译二进制
+- 用户运行安装脚本或按手册手动配置
+- 工具以用户级后台服务的方式常驻运行
+
+只有开发者或贡献者才需要 Rust。
+
+## 两套使用文档
+
+- 用户版安装手册：`docs/manual-install.md`
+- Agent 通用操作手册：`AGENTS.md`
+
+如果你是最终用户，先看用户版。
+如果你是帮用户安装和配置的 Agent，先看 Agent 版。
+
+## 当前项目状态
+
+- Rust workspace：`crates/core` + `crates/cli`
+- 配置文件模型：支持多仓库
+- systemd 用户服务模板
 - GitHub Actions CI
-- MIT License
+- GitHub Releases 构建工作流
+- Linux 安装脚本
 
-## 现在怎么应用到 openclawcode
+## 对新用户的默认路径
 
-项目根目录里的 `config.toml` 不是示例，而是当前这台机器上针对 `openclawcode` 的实际配置：
+推荐安装方式：
 
-- 仓库名：`openclawcode`
-- 仓库路径：`/home/lyz/pros/openclawcode`
-- 拉取间隔：60 秒
+1. 从 GitHub Releases 下载预编译包
+2. 运行 `scripts/install.sh`
+3. 编辑配置文件
+4. 启动用户服务
 
-如果只想对这个仓库执行一次检查：
+如果用户愿意手动安装，也支持完全手动配置。
 
-```bash
-cd /home/lyz/pros/repo-auto-puller
-cargo run -p repo-auto-puller -- --config /home/lyz/pros/repo-auto-puller/config.toml --repo openclawcode --once
-```
+## 本机当前应用状态
 
-如果只做检测，不真的拉取：
+这个仓库当前已经在本机上实际守护 `openclawcode`：
 
-```bash
-cd /home/lyz/pros/repo-auto-puller
-cargo run -p repo-auto-puller -- --config /home/lyz/pros/repo-auto-puller/config.toml --repo openclawcode --once --dry-run
-```
+- 配置文件：`/home/lyz/pros/repo-auto-puller/config.toml`
+- 服务名：`openclawcode-auto-puller.service`
+- 二进制路径：`/home/lyz/.local/bin/repo-auto-puller`
 
-常驻运行：
+这属于当前机器上的实例化部署，不代表普通用户也必须按这个路径来。
 
-```bash
-cd /home/lyz/pros/repo-auto-puller
-cargo run -p repo-auto-puller -- --config /home/lyz/pros/repo-auto-puller/config.toml --repo openclawcode
-```
+## 仓库结构
 
-## 给 openclawcode 的部署文件
-
-项目里已经加了一个 `systemd --user` 服务文件模板：
-
-- `deploy/systemd/openclawcode-auto-puller.service`
-
-推荐部署步骤：
-
-1. 安装 Rust
-2. 在本项目里执行 `cargo build --release -p repo-auto-puller`
-3. 把生成的二进制复制到 `~/.local/bin/repo-auto-puller`
-4. 把服务文件复制到 `~/.config/systemd/user/openclawcode-auto-puller.service`
-5. 执行 `systemctl --user daemon-reload`
-6. 执行 `systemctl --user enable --now openclawcode-auto-puller.service`
-
-查看日志：
-
-```bash
-journalctl --user -u openclawcode-auto-puller.service -f
-```
-
-## 项目结构
-
-- `crates/core`: Git 仓库状态与自动拉取决策
-- `crates/cli`: 配置加载、多仓库调度、日志与信号处理
-- `config.toml`: 当前机器上对 `openclawcode` 的实际配置
-- `deploy/systemd`: systemd 用户服务模板
+- `crates/core`: Git 状态、决策逻辑
+- `crates/cli`: 配置加载、调度、日志、信号处理
+- `examples/config.toml`: 通用配置示例
+- `deploy/systemd/repo-auto-puller.service.template`: 通用 systemd 模板
+- `scripts/install.sh`: Linux 安装脚本
+- `docs/manual-install.md`: 用户版手册
+- `AGENTS.md`: 给 Codex、Claude Code、OpenClaw 等代理的安装使用说明
 - `docs/product-plan.md`: 产品路线图
 - `docs/rust-architecture.md`: Rust 技术设计
 
-## 当前行为
+## 开发者
 
-- 周期性 `git fetch`
-- 用 `git rev-list --left-right --count HEAD...<upstream>` 判断 ahead / behind
-- 仅在 fast-forward 安全时执行 `git pull --ff-only --no-rebase`
-- 本地脏工作区、本地领先、分叉时跳过
-- 支持 `--config`、`--repo`、`--once`、`--dry-run`、`--verbose`
+开发和贡献时才需要 Rust：
 
-## 说明
-
-当前这台机器还没有安装 Rust 工具链，所以我已经把工程结构和代码改好了，但还没有在本机执行 `cargo build` / `cargo test`。CI 已经补上，等你推送后 GitHub Actions 会帮你验证。
+```bash
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo build --release -p repo-auto-puller
+```
