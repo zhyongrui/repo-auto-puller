@@ -35,8 +35,10 @@
 - `examples/config.toml`: 通用配置示例
 - `deploy/systemd`: 服务模板
 - `scripts/install.sh`: Linux/macOS 安装脚本
+- `scripts/install.ps1`: Windows 安装脚本
 - `docs/manual-install.md`: 给最终用户看的安装文档
 - `docs/agent-install.md`: 给代理看的安装部署文档
+- `docs/troubleshooting.md`: 常见故障排查
 - `docs/product-plan.md`: 产品路线图
 - `docs/rust-architecture.md`: Rust 技术设计
 
@@ -59,6 +61,7 @@
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo build --release -p repo-auto-puller
+./scripts/regression-check.sh
 ```
 
 如果改了 shell 安装脚本，也应至少检查：
@@ -67,10 +70,17 @@ cargo build --release -p repo-auto-puller
 bash -n scripts/install.sh
 ```
 
+如果改了 PowerShell 安装脚本，也应至少做语法级检查或人工复核：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install.ps1
+```
+
 ## 文档导航
 
 - 项目入口：`README.md`
 - 用户安装：`docs/manual-install.md`
 - 代理安装：`docs/agent-install.md`
+- 故障排查：`docs/troubleshooting.md`
 - 产品方向：`docs/product-plan.md`
 - 技术架构：`docs/rust-architecture.md`

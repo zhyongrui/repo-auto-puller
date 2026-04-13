@@ -66,6 +66,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
 最小示例：
 
 ```toml
+config_version = 1
+
 [defaults]
 log_file = "~/.local/state/repo-auto-puller/repo-auto-puller.log"
 state_file = "~/.local/state/repo-auto-puller/status.json"
@@ -237,6 +239,16 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml doctor \
 ```bash
 repo-auto-puller --config ~/.config/repo-auto-puller/config.toml check-config
 ```
+
+### 升级旧配置
+
+如果你是从较早版本升级过来，想把当前配置文件重写成最新稳定格式：
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml migrate-config
+```
+
+迁移后配置里会写入明确的 `config_version`。
 
 ### 用户级后台服务
 

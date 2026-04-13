@@ -59,6 +59,8 @@ install -m 0755 "${tmpdir}/repo-auto-puller" "${INSTALL_DIR}/repo-auto-puller"
 
 if [[ ! -f "${CONFIG_PATH}" ]]; then
   cat > "${CONFIG_PATH}" <<'EOF'
+config_version = 1
+
 [defaults]
 log_file = "~/.local/state/repo-auto-puller/repo-auto-puller.log"
 state_file = "~/.local/state/repo-auto-puller/status.json"

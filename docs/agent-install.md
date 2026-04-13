@@ -180,6 +180,14 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml pause --repo <n
 repo-auto-puller --config ~/.config/repo-auto-puller/config.toml resume --repo <name>
 ```
 
+如果 Agent 在升级一个老实例，建议额外执行一次：
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml migrate-config
+```
+
+这样可以把配置写回当前稳定版本，并显式带上 `config_version`。
+
 如果实际安装的是自定义服务名，Agent 在执行 `doctor` 时必须把同一个 `--service-name` 传回去，否则会把“服务名不匹配”误报成“服务未安装”。
 
 建议额外确认：

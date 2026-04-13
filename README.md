@@ -14,6 +14,7 @@
 
 - 用户版安装手册：`docs/manual-install.md`
 - 代理安装手册：`docs/agent-install.md`
+- 故障排查：`docs/troubleshooting.md`
 - 仓库代理规范：`AGENTS.md`
 
 如果你是最终用户，先看用户版。
@@ -23,7 +24,7 @@
 
 - Rust workspace：`crates/core` + `crates/cli`
 - 配置文件模型：支持多仓库
-- `init`、`status`、`dashboard`、`check-config`、`doctor`、`install-service`、`uninstall-service` 子命令
+- `init`、`status`、`dashboard`、`pause`、`resume`、`migrate-config`、`check-config`、`doctor`、`install-service`、`uninstall-service` 子命令
 - 失败告警钩子
 - 平台原生后台服务安装辅助
 - GitHub Actions CI
@@ -64,6 +65,7 @@
 - `scripts/install.ps1`: Windows 安装脚本
 - `docs/manual-install.md`: 用户版手册
 - `docs/agent-install.md`: 给 Codex、Claude Code、OpenClaw 等代理的安装使用说明
+- `docs/troubleshooting.md`: 常见故障排查
 - `AGENTS.md`: 给代理看的仓库工作规范与文档导航
 - `docs/product-plan.md`: 产品路线图
 - `docs/rust-architecture.md`: Rust 技术设计
@@ -76,6 +78,7 @@
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo build --release -p repo-auto-puller
+./scripts/regression-check.sh
 ```
 
 ## 新增：初始化配置
@@ -191,6 +194,12 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml dashboard --lis
 ```bash
 repo-auto-puller --config ~/.config/repo-auto-puller/config.toml pause --repo my-repo
 repo-auto-puller --config ~/.config/repo-auto-puller/config.toml resume --repo my-repo
+```
+
+如果你想把旧配置重写为当前稳定版本，可以运行：
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml migrate-config
 ```
 
 检查配置是否有效、仓库路径是否能初始化：

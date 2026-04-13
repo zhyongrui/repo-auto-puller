@@ -39,6 +39,7 @@ enum Commands {
     Dashboard(DashboardArgs),
     Pause(RepoToggleArgs),
     Resume(RepoToggleArgs),
+    MigrateConfig,
     CheckConfig,
     Doctor(DoctorArgs),
     InstallService(InstallServiceArgs),
@@ -146,6 +147,8 @@ struct RunArgs {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct AppConfig {
+    #[serde(default = "default_config_version")]
+    config_version: u32,
     #[serde(default)]
     defaults: DefaultsConfig,
     #[serde(default)]
@@ -308,6 +311,8 @@ struct StateStore {
 struct HistoryStore {
     path: PathBuf,
 }
+
+const CURRENT_CONFIG_VERSION: u32 = 1;
 
 impl Logger {
     fn stdout() -> Self {
@@ -479,6 +484,10 @@ fn default_interval_seconds() -> f64 {
     60.0
 }
 
+fn default_config_version() -> u32 {
+    CURRENT_CONFIG_VERSION
+}
+
 fn default_enabled() -> bool {
     true
 }
@@ -552,6 +561,13 @@ fn load_config_if_exists(path: &Path) -> Result<Option<AppConfig>> {
 }
 
 fn validate_config_schema(config: &AppConfig) -> Result<()> {
+    if config.config_version > CURRENT_CONFIG_VERSION {
+        bail!(
+            "config_version {} is newer than this binary supports ({CURRENT_CONFIG_VERSION})",
+            config.config_version
+        );
+    }
+
     if config.repositories.is_empty() {
         bail!("config has no repositories");
     }
@@ -835,6 +851,18 @@ fn set_repository_paused(config_path: &Path, repo_name: &str, paused: bool) -> R
     Ok(())
 }
 
+fn migrate_config(config_path: &Path) -> Result<()> {
+    let mut config = load_config(config_path)?;
+    config.config_version = CURRENT_CONFIG_VERSION;
+    write_config(config_path, &config)?;
+    println!(
+        "Migrated config to version {} in {}",
+        CURRENT_CONFIG_VERSION,
+        expand_tilde(config_path).display()
+    );
+    Ok(())
+}
+
 fn init_config(config_path: &Path, args: &InitArgs) -> Result<()> {
     if args.interval <= 0.0 {
         bail!("--interval must be greater than 0");
@@ -853,6 +881,7 @@ fn init_config(config_path: &Path, args: &InitArgs) -> Result<()> {
     };
 
     let mut config = load_config_if_exists(config_path)?.unwrap_or_else(|| AppConfig {
+        config_version: CURRENT_CONFIG_VERSION,
         defaults: DefaultsConfig {
             log_file: Some(default_log_file_path()),
             state_file: Some(default_state_file_path()),
@@ -2473,6 +2502,7 @@ fn main() -> Result<()> {
         Some(Commands::Dashboard(args)) => serve_dashboard(&config, &args),
         Some(Commands::Pause(args)) => set_repository_paused(&config, &args.repo, true),
         Some(Commands::Resume(args)) => set_repository_paused(&config, &args.repo, false),
+        Some(Commands::MigrateConfig) => migrate_config(&config),
         Some(Commands::CheckConfig) => check_config(&config),
         Some(Commands::Doctor(args)) => render_doctor(&config, &args),
         Some(Commands::InstallService(args)) => install_service(&config, &args),
@@ -2484,11 +2514,12 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppConfig, CommandProbe, DefaultsConfig, DesktopNotificationsConfig, HistoryRecord,
-        HistoryStore, NotificationSettings, PersistedRepoState, PersistedState, QuietHoursConfig,
-        RepositoryConfig, StatusEntry, StatusOutput, branch_allowed, build_program_args,
-        decision_blocks_auto_pull, effective_report, escape_applescript_text, in_quiet_hours,
-        infer_repo_name, launchd_plist_path, load_config, merge_notification_settings,
+        AppConfig, CURRENT_CONFIG_VERSION, CommandProbe, DefaultsConfig,
+        DesktopNotificationsConfig, HistoryRecord, HistoryStore, NotificationSettings,
+        PersistedRepoState, PersistedState, QuietHoursConfig, RepositoryConfig, StatusEntry,
+        StatusOutput, branch_allowed, build_program_args, decision_blocks_auto_pull,
+        effective_report, escape_applescript_text, in_quiet_hours, infer_repo_name,
+        launchd_plist_path, load_config, merge_notification_settings, migrate_config,
         quote_systemd_arg, quote_windows_arg, render_dashboard_html, render_launchd_plist,
         render_systemd_service, render_windows_command_script, run_desktop_notification,
         sanitize_repo_name, selected_repositories, set_repository_paused, systemd_unit_path,
@@ -2518,6 +2549,7 @@ mod tests {
     #[test]
     fn upserts_repository_by_name() {
         let mut config = AppConfig {
+            config_version: CURRENT_CONFIG_VERSION,
             defaults: DefaultsConfig::default(),
             repositories: vec![RepositoryConfig {
                 name: "openclawcode".into(),
@@ -2575,6 +2607,7 @@ mod tests {
     #[test]
     fn validates_duplicate_names() {
         let config = AppConfig {
+            config_version: CURRENT_CONFIG_VERSION,
             defaults: DefaultsConfig::default(),
             repositories: vec![
                 RepositoryConfig {
@@ -3139,5 +3172,50 @@ path = "/tmp/openclawcode"
         assert!(!resumed.repositories[0].paused);
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn migrates_legacy_config_to_current_version() {
+        let path = std::env::temp_dir().join(format!(
+            "repo-auto-puller-migrate-{}-{}.toml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("current time should be after epoch")
+                .as_nanos()
+        ));
+        fs::write(
+            &path,
+            r#"
+[[repositories]]
+name = "openclawcode"
+path = "/tmp/openclawcode"
+"#,
+        )
+        .expect("config file should be written");
+
+        migrate_config(&path).expect("migration should succeed");
+        let migrated = load_config(&path).expect("migrated config should load");
+
+        assert_eq!(migrated.config_version, CURRENT_CONFIG_VERSION);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn rejects_future_config_versions() {
+        let config: AppConfig = toml::from_str(
+            r#"
+config_version = 999
+
+[[repositories]]
+name = "openclawcode"
+path = "/tmp/openclawcode"
+"#,
+        )
+        .expect("config should deserialize");
+
+        let err = validate_config_schema(&config).expect_err("future version should be rejected");
+        assert!(err.to_string().contains("config_version 999 is newer"));
     }
 }

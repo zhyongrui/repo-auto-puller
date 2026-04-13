@@ -1,3 +1,5 @@
+config_version = 1
+
 [defaults]
 log_file = "~/.local/state/repo-auto-puller/repo-auto-puller.log"
 state_file = "~/.local/state/repo-auto-puller/status.json"

@@ -30,6 +30,8 @@ try {
 
     if (-not (Test-Path $ConfigPath)) {
         @"
+config_version = 1
+
 [defaults]
 log_file = "$($env:LOCALAPPDATA.Replace('\', '\\'))/repo-auto-puller/repo-auto-puller.log"
 state_file = "$($env:LOCALAPPDATA.Replace('\', '\\'))/repo-auto-puller/status.json"
