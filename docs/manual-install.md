@@ -73,6 +73,16 @@ allowed_branches = ["main"]
 
 如果你想临时暂停某个仓库的自动拉取，但保留它在配置和状态输出里，把 `paused` 改成 `true`。
 
+如果你想在真正执行自动拉取之前或之后触发命令，可以使用：
+
+```toml
+[defaults]
+before_pull_command = "echo before pull"
+after_pull_command = "echo after pull"
+```
+
+这两个 hook 只会在真实自动拉取时触发；`dry_run` 或被保护策略跳过时不会执行。
+
 你也可以直接让工具帮你生成配置，而不是手写：
 
 ```bash

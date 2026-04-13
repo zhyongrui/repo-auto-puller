@@ -112,6 +112,14 @@ path = "/path/to/your/repo"
 paused = true
 ```
 
+如果你想在真实自动拉取前后执行命令，也可以在配置里加：
+
+```toml
+[defaults]
+before_pull_command = "echo before pull"
+after_pull_command = "echo after pull"
+```
+
 ## 新增：状态和配置检查
 
 查看仓库当前状态和阻塞原因：

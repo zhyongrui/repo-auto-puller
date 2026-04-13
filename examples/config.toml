@@ -1,6 +1,8 @@
 [defaults]
 log_file = "~/.local/state/repo-auto-puller/repo-auto-puller.log"
 verbose = false
+# before_pull_command = "echo before pull"
+# after_pull_command = "echo after pull"
 
 [[repositories]]
 name = "my-repo"

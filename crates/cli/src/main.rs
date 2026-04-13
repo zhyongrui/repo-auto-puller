@@ -135,6 +135,8 @@ struct DefaultsConfig {
     log_file: Option<PathBuf>,
     #[serde(default)]
     verbose: bool,
+    before_pull_command: Option<String>,
+    after_pull_command: Option<String>,
     on_failure_command: Option<String>,
 }
 
@@ -152,6 +154,8 @@ struct RepositoryConfig {
     dry_run: bool,
     #[serde(default)]
     allowed_branches: Vec<String>,
+    before_pull_command: Option<String>,
+    after_pull_command: Option<String>,
     on_failure_command: Option<String>,
 }
 
@@ -165,12 +169,16 @@ struct ManagedRepo {
     next_run_at: Instant,
     last_message: Option<String>,
     last_error: Option<String>,
+    before_pull_command: Option<String>,
+    after_pull_command: Option<String>,
     on_failure_command: Option<String>,
 }
 
 #[derive(Clone)]
 struct SelectedRepo {
     config: RepositoryConfig,
+    before_pull_command: Option<String>,
+    after_pull_command: Option<String>,
     on_failure_command: Option<String>,
 }
 
@@ -328,6 +336,14 @@ fn selected_repositories(config: &AppConfig, selected: &[String]) -> Result<Vec<
 
         repos.push(SelectedRepo {
             config: repo.clone(),
+            before_pull_command: repo
+                .before_pull_command
+                .clone()
+                .or_else(|| config.defaults.before_pull_command.clone()),
+            after_pull_command: repo
+                .after_pull_command
+                .clone()
+                .or_else(|| config.defaults.after_pull_command.clone()),
             on_failure_command: repo
                 .on_failure_command
                 .clone()
@@ -366,6 +382,8 @@ fn build_managed_repos(
             next_run_at: Instant::now(),
             last_message: None,
             last_error: None,
+            before_pull_command: repo.before_pull_command,
+            after_pull_command: repo.after_pull_command,
             on_failure_command: repo.on_failure_command,
         });
     }
@@ -481,6 +499,8 @@ fn init_config(config_path: &Path, args: &InitArgs) -> Result<()> {
                 "~/.local/state/repo-auto-puller/repo-auto-puller.log",
             )),
             verbose: false,
+            before_pull_command: None,
+            after_pull_command: None,
             on_failure_command: None,
         },
         repositories: Vec::new(),
@@ -496,6 +516,8 @@ fn init_config(config_path: &Path, args: &InitArgs) -> Result<()> {
             paused: false,
             dry_run: args.dry_run,
             allowed_branches: Vec::new(),
+            before_pull_command: None,
+            after_pull_command: None,
             on_failure_command: None,
         },
     );
@@ -966,6 +988,53 @@ fn run_failure_hook(logger: &mut Logger, managed: &ManagedRepo, error: &str) -> 
     Ok(())
 }
 
+fn run_pull_hook(
+    logger: &mut Logger,
+    managed: &ManagedRepo,
+    event: &str,
+    command: Option<&str>,
+    snapshot: &Snapshot,
+    strict: bool,
+) -> Result<()> {
+    let Some(command) = command else {
+        return Ok(());
+    };
+
+    let output = Command::new("sh")
+        .arg("-lc")
+        .arg(command)
+        .env("REPO_AUTO_PULLER_EVENT", event)
+        .env("REPO_AUTO_PULLER_REPO_NAME", &managed.config.name)
+        .env(
+            "REPO_AUTO_PULLER_REPO_PATH",
+            managed.syncer.repo_path().display().to_string(),
+        )
+        .env("REPO_AUTO_PULLER_BRANCH", &snapshot.branch)
+        .env("REPO_AUTO_PULLER_UPSTREAM", &snapshot.upstream)
+        .env("REPO_AUTO_PULLER_REMOTE", &snapshot.remote)
+        .env("REPO_AUTO_PULLER_REMOTE_BRANCH", &snapshot.remote_branch)
+        .output()
+        .with_context(|| format!("failed to execute {event} hook for {}", managed.config.name))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    let message = if stderr.is_empty() {
+        format!("{event} hook exited unsuccessfully")
+    } else {
+        format!("{event} hook exited unsuccessfully: {stderr}")
+    };
+
+    if strict {
+        bail!(message);
+    }
+
+    logger.log("WARN", &managed.config.name, message)?;
+    Ok(())
+}
+
 fn sync_repo(
     logger: &mut Logger,
     managed: &mut ManagedRepo,
@@ -1001,6 +1070,15 @@ fn sync_repo(
         return Ok(());
     }
 
+    run_pull_hook(
+        logger,
+        managed,
+        "before_pull",
+        managed.before_pull_command.as_deref(),
+        &snapshot,
+        true,
+    )?;
+
     logger.log(
         "INFO",
         &managed.config.name,
@@ -1014,6 +1092,14 @@ fn sync_repo(
         "INFO",
         &managed.config.name,
         format!("auto-pull complete: {}", managed.syncer.head_summary()?),
+    )?;
+    run_pull_hook(
+        logger,
+        managed,
+        "after_pull",
+        managed.after_pull_command.as_deref(),
+        &snapshot,
+        false,
     )?;
     Ok(())
 }
@@ -1408,6 +1494,8 @@ mod tests {
                 paused: false,
                 dry_run: false,
                 allowed_branches: Vec::new(),
+                before_pull_command: None,
+                after_pull_command: None,
                 on_failure_command: None,
             }],
         };
@@ -1422,6 +1510,8 @@ mod tests {
                 paused: false,
                 dry_run: true,
                 allowed_branches: vec!["main".into()],
+                before_pull_command: Some("echo before".into()),
+                after_pull_command: Some("echo after".into()),
                 on_failure_command: Some("echo failed".into()),
             },
         );
@@ -1431,6 +1521,14 @@ mod tests {
         assert_eq!(config.repositories[0].interval_seconds, 30.0);
         assert!(config.repositories[0].dry_run);
         assert_eq!(config.repositories[0].allowed_branches, vec!["main"]);
+        assert_eq!(
+            config.repositories[0].before_pull_command.as_deref(),
+            Some("echo before")
+        );
+        assert_eq!(
+            config.repositories[0].after_pull_command.as_deref(),
+            Some("echo after")
+        );
         assert_eq!(
             config.repositories[0].on_failure_command.as_deref(),
             Some("echo failed")
@@ -1450,6 +1548,8 @@ mod tests {
                     paused: false,
                     dry_run: false,
                     allowed_branches: Vec::new(),
+                    before_pull_command: None,
+                    after_pull_command: None,
                     on_failure_command: None,
                 },
                 RepositoryConfig {
@@ -1460,6 +1560,8 @@ mod tests {
                     paused: false,
                     dry_run: false,
                     allowed_branches: Vec::new(),
+                    before_pull_command: None,
+                    after_pull_command: None,
                     on_failure_command: None,
                 },
             ],
@@ -1595,6 +1697,8 @@ mod tests {
             paused: false,
             dry_run: false,
             allowed_branches: Vec::new(),
+            before_pull_command: None,
+            after_pull_command: None,
             on_failure_command: None,
         };
 
@@ -1612,6 +1716,8 @@ mod tests {
             paused: false,
             dry_run: false,
             allowed_branches: vec!["main".into()],
+            before_pull_command: None,
+            after_pull_command: None,
             on_failure_command: None,
         };
         let snapshot = Snapshot {
@@ -1641,6 +1747,8 @@ mod tests {
             paused: true,
             dry_run: false,
             allowed_branches: vec!["main".into()],
+            before_pull_command: None,
+            after_pull_command: None,
             on_failure_command: None,
         };
         let snapshot = Snapshot {
