@@ -130,8 +130,11 @@ repo-auto-puller uninstall-service --service-name openclawcode-auto-puller
 - macOS：`launchctl print gui/$(id -u)/repo-auto-puller`
 - 日志文件是否持续写入
 - 至少执行一次真实检查
+- `repo-auto-puller --config ~/.config/repo-auto-puller/config.toml doctor --repo <name>`
 - `repo-auto-puller --config ~/.config/repo-auto-puller/config.toml check-config`
 - `repo-auto-puller --config ~/.config/repo-auto-puller/config.toml status --repo <name>`
+
+如果实际安装的是自定义服务名，Agent 在执行 `doctor` 时必须把同一个 `--service-name` 传回去，否则会把“服务名不匹配”误报成“服务未安装”。
 
 建议额外确认：
 

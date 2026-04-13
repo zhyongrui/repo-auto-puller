@@ -109,6 +109,28 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml --repo my-repo 
 repo-auto-puller --config ~/.config/repo-auto-puller/config.toml status --repo my-repo
 ```
 
+### 运行诊断
+
+安装好配置和服务后，推荐再跑一遍：
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml doctor --repo my-repo
+```
+
+它会检查：
+
+- 配置文件是否存在且可解析
+- 后台服务定义是否存在、是否处于运行状态
+- 仓库 fetch 和同步决策是否正常
+
+如果你安装时用了自定义服务名，也要一起传给 `doctor`：
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml doctor \
+  --repo my-repo \
+  --service-name my-repo-auto-puller
+```
+
 ### 检查配置
 
 ```bash

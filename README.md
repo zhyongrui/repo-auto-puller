@@ -23,7 +23,7 @@
 
 - Rust workspace：`crates/core` + `crates/cli`
 - 配置文件模型：支持多仓库
-- `init`、`status`、`check-config`、`install-service`、`uninstall-service` 子命令
+- `init`、`status`、`check-config`、`doctor`、`install-service`、`uninstall-service` 子命令
 - 失败告警钩子
 - 平台原生后台服务安装辅助
 - GitHub Actions CI
@@ -39,7 +39,7 @@
 2. 运行 `scripts/install.sh`
 3. 运行 `repo-auto-puller init`
 4. 运行 `repo-auto-puller install-service`
-5. 用 `repo-auto-puller status` 和 `check-config` 验证
+5. 用 `repo-auto-puller doctor`、`status` 和 `check-config` 验证
 
 如果用户愿意手动安装，也支持完全手动配置。
 
@@ -106,6 +106,20 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml status --repo m
 
 ```bash
 repo-auto-puller --config ~/.config/repo-auto-puller/config.toml check-config
+```
+
+做一遍安装后诊断，确认配置、后台服务和仓库探测都正常：
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml doctor --repo my-repo
+```
+
+如果安装时用了自定义服务名，也要带上：
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml doctor \
+  --repo my-repo \
+  --service-name my-repo-auto-puller
 ```
 
 ## 新增：服务安装辅助

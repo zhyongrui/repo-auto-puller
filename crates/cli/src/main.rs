@@ -36,6 +36,7 @@ enum Commands {
     Init(InitArgs),
     Status(StatusArgs),
     CheckConfig,
+    Doctor(DoctorArgs),
     InstallService(InstallServiceArgs),
     UninstallService(UninstallServiceArgs),
 }
@@ -65,6 +66,18 @@ struct StatusArgs {
 
     #[arg(long)]
     no_fetch: bool,
+}
+
+#[derive(Debug, Args)]
+struct DoctorArgs {
+    #[arg(long)]
+    repo: Vec<String>,
+
+    #[arg(long)]
+    no_fetch: bool,
+
+    #[arg(long, default_value = "repo-auto-puller")]
+    service_name: String,
 }
 
 #[derive(Debug, Args)]
@@ -152,6 +165,11 @@ struct ManagedRepo {
 struct SelectedRepo {
     config: RepositoryConfig,
     on_failure_command: Option<String>,
+}
+
+struct CommandProbe {
+    ok: bool,
+    detail: String,
 }
 
 impl Logger {
@@ -518,6 +536,50 @@ fn render_launchd_plist(label: &str, program_args: &[String]) -> String {
 "#,
         escape_xml(label),
         args
+    )
+}
+
+fn command_probe(program: &str, args: &[&str], display_name: &str) -> CommandProbe {
+    match Command::new(program).args(args).output() {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            if output.status.success() {
+                CommandProbe {
+                    ok: true,
+                    detail: if stdout.is_empty() {
+                        "ok".to_owned()
+                    } else {
+                        stdout
+                    },
+                }
+            } else {
+                let detail = if !stderr.is_empty() {
+                    stderr
+                } else if !stdout.is_empty() {
+                    stdout
+                } else {
+                    format!("{display_name} exited with status {}", output.status)
+                };
+                CommandProbe { ok: false, detail }
+            }
+        }
+        Err(err) => CommandProbe {
+            ok: false,
+            detail: format!("failed to execute {display_name}: {err}"),
+        },
+    }
+}
+
+fn print_doctor_check(label: &str, ok: bool, detail: impl AsRef<str>) {
+    let status = if ok { "ok" } else { "issue" };
+    println!("  {label}: {status} ({})", detail.as_ref());
+}
+
+fn decision_blocks_auto_pull(decision: &SyncDecision) -> bool {
+    matches!(
+        decision,
+        SyncDecision::Diverged | SyncDecision::DirtyBehind | SyncDecision::AheadOnly
     )
 }
 
@@ -906,6 +968,158 @@ fn render_status(config_path: &Path, args: &StatusArgs) -> Result<()> {
     Ok(())
 }
 
+fn doctor_service(service_name: &str) -> bool {
+    println!("Service:");
+    match std::env::consts::OS {
+        "linux" => {
+            let unit_name = format!("{service_name}.service");
+            let unit_path = systemd_unit_path(service_name);
+            let definition_ok = unit_path.exists();
+            println!("  manager: systemd --user");
+            print_doctor_check("definition", definition_ok, unit_path.display().to_string());
+
+            let enabled = command_probe(
+                "systemctl",
+                &["--user", "is-enabled", &unit_name],
+                "systemctl --user is-enabled",
+            );
+            print_doctor_check("enabled", enabled.ok, enabled.detail);
+
+            let active = command_probe(
+                "systemctl",
+                &["--user", "is-active", &unit_name],
+                "systemctl --user is-active",
+            );
+            print_doctor_check("active", active.ok, active.detail);
+
+            !(definition_ok && enabled.ok && active.ok)
+        }
+        "macos" => {
+            let plist_path = launchd_plist_path(service_name);
+            let definition_ok = plist_path.exists();
+            println!("  manager: launchd");
+            print_doctor_check(
+                "definition",
+                definition_ok,
+                plist_path.display().to_string(),
+            );
+
+            let service_target = match launchd_domain() {
+                Ok(domain) => format!("{domain}/{service_name}"),
+                Err(err) => {
+                    print_doctor_check("loaded", false, err.to_string());
+                    return true;
+                }
+            };
+            let loaded = command_probe("launchctl", &["print", &service_target], "launchctl print");
+            print_doctor_check("loaded", loaded.ok, loaded.detail);
+
+            !(definition_ok && loaded.ok)
+        }
+        other => {
+            println!("  manager: unsupported");
+            print_doctor_check(
+                "manager",
+                false,
+                format!("doctor does not support service diagnostics on {other}"),
+            );
+            true
+        }
+    }
+}
+
+fn render_doctor(config_path: &Path, args: &DoctorArgs) -> Result<()> {
+    let mut found_issues = false;
+    let config_path = expand_tilde(config_path);
+
+    println!("Doctor");
+    println!("Config:");
+    print_doctor_check(
+        "path",
+        config_path.exists(),
+        config_path.display().to_string(),
+    );
+
+    let config = match load_config(&config_path) {
+        Ok(config) => {
+            let enabled = config
+                .repositories
+                .iter()
+                .filter(|repo| repo.enabled)
+                .count();
+            print_doctor_check("parse", true, format!("{enabled} enabled repositories"));
+            config
+        }
+        Err(err) => {
+            print_doctor_check("parse", false, err.to_string());
+            println!();
+            let _ = doctor_service(&args.service_name);
+            bail!("doctor found issues");
+        }
+    };
+
+    println!();
+    found_issues |= doctor_service(&args.service_name);
+
+    println!();
+    println!("Repositories:");
+    let repos = match selected_repositories(&config, &args.repo) {
+        Ok(repos) => repos,
+        Err(err) => {
+            print_doctor_check("selection", false, err.to_string());
+            bail!("doctor found issues");
+        }
+    };
+
+    for repo in repos {
+        let repo_path = expand_tilde(&repo.config.path);
+        println!("Repository: {}", repo.config.name);
+        print_doctor_check("path", repo_path.exists(), repo_path.display().to_string());
+
+        let syncer = match RepoSyncer::new(&repo_path) {
+            Ok(syncer) => {
+                print_doctor_check("init", true, syncer.repo_path().display().to_string());
+                syncer
+            }
+            Err(err) => {
+                print_doctor_check("init", false, err.to_string());
+                found_issues = true;
+                println!();
+                continue;
+            }
+        };
+
+        match probe_repository(&syncer, !args.no_fetch) {
+            Ok((snapshot, report)) => {
+                print_doctor_check("fetch", true, "remote probe succeeded");
+                println!("  branch: {}", snapshot.branch);
+                println!("  upstream: {}", snapshot.upstream);
+                println!("  ahead: {}", snapshot.ahead);
+                println!("  behind: {}", snapshot.behind);
+                println!("  dirty: {}", snapshot.dirty);
+                println!("  decision: {}", report.decision.as_str());
+                println!("  message: {}", report.message);
+                if decision_blocks_auto_pull(&report.decision) {
+                    found_issues = true;
+                }
+            }
+            Err(err) => {
+                print_doctor_check("fetch", false, err.to_string());
+                found_issues = true;
+            }
+        }
+
+        println!();
+    }
+
+    if found_issues {
+        bail!("doctor found issues");
+    }
+
+    println!("Doctor OK");
+    Ok(())
+}
+
 fn check_config(config_path: &Path) -> Result<()> {
     let config = load_config(config_path)?;
     let repos = selected_repositories(&config, &[])?;
@@ -1007,6 +1221,7 @@ fn main() -> Result<()> {
         Some(Commands::Init(args)) => init_config(&config, &args),
         Some(Commands::Status(args)) => render_status(&config, &args),
         Some(Commands::CheckConfig) => check_config(&config),
+        Some(Commands::Doctor(args)) => render_doctor(&config, &args),
         Some(Commands::InstallService(args)) => install_service(&config, &args),
         Some(Commands::UninstallService(args)) => uninstall_service(&args),
         None => run(&config, run_args),
@@ -1016,10 +1231,12 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppConfig, DefaultsConfig, RepositoryConfig, build_program_args, infer_repo_name,
-        launchd_plist_path, quote_systemd_arg, render_launchd_plist, render_systemd_service,
-        sanitize_repo_name, systemd_unit_path, upsert_repository, validate_config_schema,
+        AppConfig, CommandProbe, DefaultsConfig, RepositoryConfig, build_program_args,
+        decision_blocks_auto_pull, infer_repo_name, launchd_plist_path, quote_systemd_arg,
+        render_launchd_plist, render_systemd_service, sanitize_repo_name, systemd_unit_path,
+        upsert_repository, validate_config_schema,
     };
+    use repo_auto_puller_core::SyncDecision;
     use std::path::PathBuf;
 
     #[test]
@@ -1175,5 +1392,24 @@ mod tests {
     fn builds_launchd_plist_path_from_service_name() {
         let path = launchd_plist_path("repo-auto-puller");
         assert!(path.ends_with("Library/LaunchAgents/repo-auto-puller.plist"));
+    }
+
+    #[test]
+    fn blocks_auto_pull_for_guard_decisions() {
+        assert!(decision_blocks_auto_pull(&SyncDecision::AheadOnly));
+        assert!(decision_blocks_auto_pull(&SyncDecision::DirtyBehind));
+        assert!(decision_blocks_auto_pull(&SyncDecision::Diverged));
+        assert!(!decision_blocks_auto_pull(&SyncDecision::UpToDate));
+        assert!(!decision_blocks_auto_pull(&SyncDecision::PullFastForward));
+    }
+
+    #[test]
+    fn command_probe_success_uses_stdout() {
+        let probe = CommandProbe {
+            ok: true,
+            detail: "active".into(),
+        };
+        assert!(probe.ok);
+        assert_eq!(probe.detail, "active");
     }
 }
