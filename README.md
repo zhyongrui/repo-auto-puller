@@ -34,7 +34,7 @@
 
 1. 从 GitHub Releases 下载预编译包
 2. 运行 `scripts/install.sh`
-3. 编辑配置文件
+3. 运行 `repo-auto-puller init`
 4. 启动用户服务
 
 如果用户愿意手动安装，也支持完全手动配置。
@@ -70,4 +70,22 @@
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo build --release -p repo-auto-puller
+```
+
+## 新增：初始化配置
+
+现在可以直接用 `init` 生成或更新配置，而不用手写 TOML：
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml init --repo-path /path/to/repo
+```
+
+也可以显式指定名字、轮询间隔和 dry-run：
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml init \
+  --repo-path /path/to/repo \
+  --name my-repo \
+  --interval 30 \
+  --dry-run
 ```

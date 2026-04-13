@@ -62,6 +62,21 @@
 
 除非用户明确要求，不要把用户机器上的临时绝对路径提交回仓库。
 
+优先使用 `init` 子命令生成或更新配置，而不是让用户或代理手写 TOML：
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml init --repo-path /path/to/repo
+```
+
+如果要显式指定仓库名或 interval：
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml init \
+  --repo-path /path/to/repo \
+  --name my-repo \
+  --interval 60
+```
+
 ### 4. 安装用户服务
 
 优先使用用户级 systemd：

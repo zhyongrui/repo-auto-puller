@@ -52,6 +52,21 @@ dry_run = false
 
 如果你想先只做检测、不真的拉取，把 `dry_run` 改成 `true`。
 
+你也可以直接让工具帮你生成配置，而不是手写：
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml init --repo-path /path/to/your/repo
+```
+
+例如：
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml init \
+  --repo-path /path/to/your/repo \
+  --name my-repo \
+  --interval 60
+```
+
 ## 启动方式
 
 ### 前台运行

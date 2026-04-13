@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use chrono::Local;
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 use repo_auto_puller_core::{RepoSyncer, SyncDecision};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -22,6 +22,38 @@ struct Cli {
     #[arg(long, default_value = "config.toml")]
     config: PathBuf,
 
+    #[command(flatten)]
+    run: RunArgs,
+
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Debug, Subcommand)]
+enum Commands {
+    Init(InitArgs),
+}
+
+#[derive(Debug, Args)]
+struct InitArgs {
+    #[arg(long)]
+    repo_path: PathBuf,
+
+    #[arg(long)]
+    name: Option<String>,
+
+    #[arg(long, default_value_t = 60.0)]
+    interval: f64,
+
+    #[arg(long)]
+    dry_run: bool,
+
+    #[arg(long)]
+    disabled: bool,
+}
+
+#[derive(Clone, Debug, Args)]
+struct RunArgs {
     #[arg(long)]
     once: bool,
 
@@ -35,7 +67,7 @@ struct Cli {
     repo: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct AppConfig {
     #[serde(default)]
     defaults: DefaultsConfig,
@@ -43,14 +75,14 @@ struct AppConfig {
     repositories: Vec<RepositoryConfig>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 struct DefaultsConfig {
     log_file: Option<PathBuf>,
     #[serde(default)]
     verbose: bool,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct RepositoryConfig {
     name: String,
     path: PathBuf,
@@ -128,6 +160,14 @@ fn load_config(path: &Path) -> Result<AppConfig> {
     Ok(config)
 }
 
+fn load_config_if_exists(path: &Path) -> Result<Option<AppConfig>> {
+    let path = expand_tilde(path);
+    if !path.exists() {
+        return Ok(None);
+    }
+    Ok(Some(load_config(&path)?))
+}
+
 fn build_logger(config: &AppConfig) -> Result<Logger> {
     match config.defaults.log_file.as_deref() {
         Some(path) => Logger::file(&expand_tilde(path)),
@@ -135,10 +175,13 @@ fn build_logger(config: &AppConfig) -> Result<Logger> {
     }
 }
 
-fn build_managed_repos(config: AppConfig, cli: &Cli) -> Result<(Logger, bool, Vec<ManagedRepo>)> {
+fn build_managed_repos(
+    config: AppConfig,
+    run_args: &RunArgs,
+) -> Result<(Logger, bool, Vec<ManagedRepo>)> {
     let logger = build_logger(&config)?;
-    let verbose = cli.verbose || config.defaults.verbose;
-    let selected = &cli.repo;
+    let verbose = run_args.verbose || config.defaults.verbose;
+    let selected = &run_args.repo;
     let mut repos = Vec::new();
 
     for repo in config.repositories {
@@ -170,7 +213,9 @@ fn build_managed_repos(config: AppConfig, cli: &Cli) -> Result<(Logger, bool, Ve
 
 fn expand_tilde(path: &Path) -> PathBuf {
     let raw = path.to_string_lossy();
-    if raw == "~" && let Ok(home) = std::env::var("HOME") {
+    if raw == "~"
+        && let Ok(home) = std::env::var("HOME")
+    {
         return PathBuf::from(home);
     }
     if let Some(stripped) = raw.strip_prefix("~/")
@@ -179,6 +224,125 @@ fn expand_tilde(path: &Path) -> PathBuf {
         return PathBuf::from(home).join(stripped);
     }
     path.to_path_buf()
+}
+
+fn sanitize_repo_name(name: &str) -> String {
+    let mut sanitized = String::with_capacity(name.len());
+    let mut last_was_dash = false;
+
+    for ch in name.chars() {
+        let normalized = if ch.is_ascii_alphanumeric() {
+            last_was_dash = false;
+            Some(ch.to_ascii_lowercase())
+        } else if ch == '-' || ch == '_' || ch == ' ' {
+            if last_was_dash {
+                None
+            } else {
+                last_was_dash = true;
+                Some('-')
+            }
+        } else {
+            None
+        };
+
+        if let Some(ch) = normalized {
+            sanitized.push(ch);
+        }
+    }
+
+    sanitized.trim_matches('-').to_owned()
+}
+
+fn infer_repo_name(repo_path: &Path) -> Result<String> {
+    let name = repo_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(sanitize_repo_name)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "failed to infer repository name from path {}",
+                repo_path.display()
+            )
+        })?;
+    Ok(name)
+}
+
+fn ensure_parent_dir(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create directory {}", parent.display()))?;
+    }
+    Ok(())
+}
+
+fn upsert_repository(config: &mut AppConfig, repo: RepositoryConfig) {
+    if let Some(existing) = config
+        .repositories
+        .iter_mut()
+        .find(|existing| existing.name == repo.name)
+    {
+        *existing = repo;
+    } else {
+        config.repositories.push(repo);
+    }
+}
+
+fn write_config(path: &Path, config: &AppConfig) -> Result<()> {
+    let path = expand_tilde(path);
+    ensure_parent_dir(&path)?;
+    let toml = toml::to_string_pretty(config).context("failed to serialize config")?;
+    fs::write(&path, toml).with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
+}
+
+fn init_config(config_path: &Path, args: &InitArgs) -> Result<()> {
+    if args.interval <= 0.0 {
+        bail!("--interval must be greater than 0");
+    }
+
+    let repo_path = repo_auto_puller_core::resolve_repo(&expand_tilde(&args.repo_path))?;
+    let name = match &args.name {
+        Some(name) => {
+            let name = sanitize_repo_name(name);
+            if name.is_empty() {
+                bail!("repository name must contain at least one alphanumeric character");
+            }
+            name
+        }
+        None => infer_repo_name(&repo_path)?,
+    };
+
+    let mut config = load_config_if_exists(config_path)?.unwrap_or_else(|| AppConfig {
+        defaults: DefaultsConfig {
+            log_file: Some(PathBuf::from(
+                "~/.local/state/repo-auto-puller/repo-auto-puller.log",
+            )),
+            verbose: false,
+        },
+        repositories: Vec::new(),
+    });
+
+    upsert_repository(
+        &mut config,
+        RepositoryConfig {
+            name: name.clone(),
+            path: repo_path.clone(),
+            interval_seconds: args.interval,
+            enabled: !args.disabled,
+            dry_run: args.dry_run,
+        },
+    );
+    write_config(config_path, &config)?;
+
+    println!("Wrote repository config:");
+    println!("  name: {name}");
+    println!("  path: {}", repo_path.display());
+    println!("  config: {}", expand_tilde(config_path).display());
+    println!("  interval_seconds: {}", args.interval);
+    println!("  enabled: {}", !args.disabled);
+    println!("  dry_run: {}", args.dry_run);
+    Ok(())
 }
 
 fn sync_repo(
@@ -230,10 +394,9 @@ fn sync_repo(
     Ok(())
 }
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
-    let config = load_config(&cli.config)?;
-    let (mut logger, verbose, mut repos) = build_managed_repos(config, &cli)?;
+fn run(config_path: &Path, run_args: RunArgs) -> Result<()> {
+    let config = load_config(config_path)?;
+    let (mut logger, verbose, mut repos) = build_managed_repos(config, &run_args)?;
 
     let keep_running = Arc::new(AtomicBool::new(true));
     let signal_flag = Arc::clone(&keep_running);
@@ -242,9 +405,9 @@ fn main() -> Result<()> {
     })
     .context("failed to install signal handlers")?;
 
-    if cli.once {
+    if run_args.once {
         for managed in &mut repos {
-            if let Err(err) = sync_repo(&mut logger, managed, cli.dry_run, verbose) {
+            if let Err(err) = sync_repo(&mut logger, managed, run_args.dry_run, verbose) {
                 logger.log("ERROR", &managed.config.name, err.to_string())?;
             }
         }
@@ -276,7 +439,7 @@ fn main() -> Result<()> {
                 continue;
             }
 
-            if let Err(err) = sync_repo(&mut logger, managed, cli.dry_run, verbose) {
+            if let Err(err) = sync_repo(&mut logger, managed, run_args.dry_run, verbose) {
                 logger.log("ERROR", &managed.config.name, err.to_string())?;
             }
 
@@ -301,4 +464,73 @@ fn main() -> Result<()> {
 
     logger.log("INFO", "app", "repo-auto-puller stopped")?;
     Ok(())
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    let Cli {
+        config,
+        run: run_args,
+        command,
+    } = cli;
+
+    match command {
+        Some(Commands::Init(args)) => init_config(&config, &args),
+        None => run(&config, run_args),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        AppConfig, DefaultsConfig, RepositoryConfig, infer_repo_name, sanitize_repo_name,
+        upsert_repository,
+    };
+    use std::path::PathBuf;
+
+    #[test]
+    fn sanitizes_repository_names() {
+        assert_eq!(sanitize_repo_name("OpenClaw Code"), "openclaw-code");
+        assert_eq!(sanitize_repo_name("repo__name"), "repo-name");
+        assert_eq!(sanitize_repo_name("###"), "");
+    }
+
+    #[test]
+    fn infers_repository_name_from_path() {
+        let path = PathBuf::from("/tmp/OpenClaw Code");
+        assert_eq!(
+            infer_repo_name(&path).expect("should infer repository name"),
+            "openclaw-code"
+        );
+    }
+
+    #[test]
+    fn upserts_repository_by_name() {
+        let mut config = AppConfig {
+            defaults: DefaultsConfig::default(),
+            repositories: vec![RepositoryConfig {
+                name: "openclawcode".into(),
+                path: PathBuf::from("/old"),
+                interval_seconds: 60.0,
+                enabled: true,
+                dry_run: false,
+            }],
+        };
+
+        upsert_repository(
+            &mut config,
+            RepositoryConfig {
+                name: "openclawcode".into(),
+                path: PathBuf::from("/new"),
+                interval_seconds: 30.0,
+                enabled: true,
+                dry_run: true,
+            },
+        );
+
+        assert_eq!(config.repositories.len(), 1);
+        assert_eq!(config.repositories[0].path, PathBuf::from("/new"));
+        assert_eq!(config.repositories[0].interval_seconds, 30.0);
+        assert!(config.repositories[0].dry_run);
+    }
 }
