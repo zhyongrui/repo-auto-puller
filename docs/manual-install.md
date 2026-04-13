@@ -85,6 +85,27 @@ after_pull_command = "echo after pull"
 
 这两个 hook 只会在真实自动拉取时触发；`dry_run` 或被保护策略跳过时不会执行。
 
+如果你想开内建桌面通知，而不是自己拼平台命令，可以使用：
+
+```toml
+[defaults.desktop_notifications]
+on_pull = true
+on_failure = true
+```
+
+默认通知后端：
+
+- Linux：`notify-send`
+- macOS：`osascript`
+
+如果你更想接入自己的通知系统，也可以覆盖成命令：
+
+```toml
+[defaults.desktop_notifications]
+on_failure = true
+command = "notify-send \"$REPO_AUTO_PULLER_NOTIFICATION_TITLE\" \"$REPO_AUTO_PULLER_NOTIFICATION_BODY\""
+```
+
 如果你想在固定时段内暂停自动拉取，可以加：
 
 ```toml

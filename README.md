@@ -120,6 +120,27 @@ before_pull_command = "echo before pull"
 after_pull_command = "echo after pull"
 ```
 
+如果你希望在真实拉取成功或连续失败时收到桌面通知，可以加：
+
+```toml
+[defaults.desktop_notifications]
+on_pull = true
+on_failure = true
+```
+
+默认会按平台走内建通知：
+
+- Linux: `notify-send`
+- macOS: `osascript`
+
+如果你想完全自定义通知实现，也可以指定命令：
+
+```toml
+[defaults.desktop_notifications]
+on_failure = true
+command = "notify-send \"$REPO_AUTO_PULLER_NOTIFICATION_TITLE\" \"$REPO_AUTO_PULLER_NOTIFICATION_BODY\""
+```
+
 如果你想让某个仓库在固定时段内不自动拉取，可以设：
 
 ```toml

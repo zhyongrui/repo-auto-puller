@@ -75,6 +75,15 @@
 
 如果用户需要在真实拉取前后接外部动作，可以配置 `before_pull_command` 和 `after_pull_command`。这两个 hook 不会在 `dry_run` 或“因保护策略跳过拉取”的情况下触发。
 
+如果用户只需要“拉取成功 / 拉取失败时给我一个系统通知”，优先建议使用 `desktop_notifications`，不要默认让用户自己拼平台脚本。
+
+`desktop_notifications` 默认会按平台走内建通知：
+
+- Linux：`notify-send`
+- macOS：`osascript`
+
+如果用户已有自己的通知链路，再考虑配置 `desktop_notifications.command` 覆盖默认行为。
+
 如果用户希望在某些时段完全不自动拉取，可使用 `quiet_hours = { start = "23:00", end = "07:00" }`。这比直接停服务更适合“夜间静默、白天自动同步”这类策略。
 
 最近一次同步结果会默认持久化到 `~/.local/state/repo-auto-puller/status.json`，Agent 做排障时应把它和滚动日志一起看。

@@ -137,9 +137,17 @@ struct DefaultsConfig {
     history_file: Option<PathBuf>,
     #[serde(default)]
     verbose: bool,
+    desktop_notifications: Option<DesktopNotificationsConfig>,
     before_pull_command: Option<String>,
     after_pull_command: Option<String>,
     on_failure_command: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct DesktopNotificationsConfig {
+    on_pull: Option<bool>,
+    on_failure: Option<bool>,
+    command: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -163,6 +171,7 @@ struct RepositoryConfig {
     #[serde(default)]
     allowed_branches: Vec<String>,
     quiet_hours: Option<QuietHoursConfig>,
+    desktop_notifications: Option<DesktopNotificationsConfig>,
     before_pull_command: Option<String>,
     after_pull_command: Option<String>,
     on_failure_command: Option<String>,
@@ -181,6 +190,7 @@ struct ManagedRepo {
     before_pull_command: Option<String>,
     after_pull_command: Option<String>,
     on_failure_command: Option<String>,
+    notification_settings: NotificationSettings,
 }
 
 #[derive(Clone)]
@@ -189,6 +199,7 @@ struct SelectedRepo {
     before_pull_command: Option<String>,
     after_pull_command: Option<String>,
     on_failure_command: Option<String>,
+    notification_settings: NotificationSettings,
 }
 
 #[derive(Debug, Serialize)]
@@ -258,6 +269,13 @@ struct EffectiveReport {
     message: String,
     level: &'static str,
     blocks_auto_pull: bool,
+}
+
+#[derive(Clone, Debug)]
+struct NotificationSettings {
+    on_pull: bool,
+    on_failure: bool,
+    command: Option<String>,
 }
 
 struct StateStore {
@@ -552,6 +570,25 @@ fn build_history_store(config: &AppConfig) -> HistoryStore {
     HistoryStore::new(&path)
 }
 
+fn merge_notification_settings(
+    defaults: Option<&DesktopNotificationsConfig>,
+    repo: Option<&DesktopNotificationsConfig>,
+) -> NotificationSettings {
+    NotificationSettings {
+        on_pull: repo
+            .and_then(|config| config.on_pull)
+            .or_else(|| defaults.and_then(|config| config.on_pull))
+            .unwrap_or(false),
+        on_failure: repo
+            .and_then(|config| config.on_failure)
+            .or_else(|| defaults.and_then(|config| config.on_failure))
+            .unwrap_or(false),
+        command: repo
+            .and_then(|config| config.command.clone())
+            .or_else(|| defaults.and_then(|config| config.command.clone())),
+    }
+}
+
 fn selected_repositories(config: &AppConfig, selected: &[String]) -> Result<Vec<SelectedRepo>> {
     let mut repos = Vec::new();
 
@@ -577,6 +614,10 @@ fn selected_repositories(config: &AppConfig, selected: &[String]) -> Result<Vec<
                 .on_failure_command
                 .clone()
                 .or_else(|| config.defaults.on_failure_command.clone()),
+            notification_settings: merge_notification_settings(
+                config.defaults.desktop_notifications.as_ref(),
+                repo.desktop_notifications.as_ref(),
+            ),
         });
     }
 
@@ -616,6 +657,7 @@ fn build_managed_repos(
             before_pull_command: repo.before_pull_command,
             after_pull_command: repo.after_pull_command,
             on_failure_command: repo.on_failure_command,
+            notification_settings: repo.notification_settings,
         });
     }
 
@@ -734,6 +776,7 @@ fn init_config(config_path: &Path, args: &InitArgs) -> Result<()> {
                 "~/.local/state/repo-auto-puller/history.jsonl",
             )),
             verbose: false,
+            desktop_notifications: None,
             before_pull_command: None,
             after_pull_command: None,
             on_failure_command: None,
@@ -752,6 +795,7 @@ fn init_config(config_path: &Path, args: &InitArgs) -> Result<()> {
             dry_run: args.dry_run,
             allowed_branches: Vec::new(),
             quiet_hours: None,
+            desktop_notifications: None,
             before_pull_command: None,
             after_pull_command: None,
             on_failure_command: None,
@@ -856,6 +900,116 @@ fn effective_report(
         level: report.level,
         blocks_auto_pull: decision_blocks_auto_pull(&report.decision),
     }
+}
+
+fn escape_applescript_text(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn run_desktop_notification(
+    settings: &NotificationSettings,
+    event: &str,
+    repo_name: &str,
+    repo_path: &Path,
+    title: &str,
+    message: &str,
+) -> Result<()> {
+    if let Some(command) = settings.command.as_deref() {
+        let output = Command::new("sh")
+            .arg("-lc")
+            .arg(command)
+            .env("REPO_AUTO_PULLER_EVENT", event)
+            .env("REPO_AUTO_PULLER_REPO_NAME", repo_name)
+            .env(
+                "REPO_AUTO_PULLER_REPO_PATH",
+                repo_path.display().to_string(),
+            )
+            .env("REPO_AUTO_PULLER_NOTIFICATION_TITLE", title)
+            .env("REPO_AUTO_PULLER_NOTIFICATION_BODY", message)
+            .output()
+            .with_context(|| format!("failed to execute notification command for {repo_name}"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            if stderr.is_empty() {
+                bail!("notification command exited unsuccessfully");
+            }
+            bail!("notification command exited unsuccessfully: {stderr}");
+        }
+        return Ok(());
+    }
+
+    match std::env::consts::OS {
+        "linux" => {
+            let output = Command::new("notify-send")
+                .arg(title)
+                .arg(message)
+                .output()
+                .context("failed to execute notify-send")?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+                if stderr.is_empty() {
+                    bail!("notify-send exited unsuccessfully");
+                }
+                bail!("notify-send exited unsuccessfully: {stderr}");
+            }
+            Ok(())
+        }
+        "macos" => {
+            let script = format!(
+                "display notification \"{}\" with title \"{}\"",
+                escape_applescript_text(message),
+                escape_applescript_text(title)
+            );
+            let output = Command::new("osascript")
+                .args(["-e", &script])
+                .output()
+                .context("failed to execute osascript")?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+                if stderr.is_empty() {
+                    bail!("osascript exited unsuccessfully");
+                }
+                bail!("osascript exited unsuccessfully: {stderr}");
+            }
+            Ok(())
+        }
+        other => bail!("desktop notifications are not supported on this operating system: {other}"),
+    }
+}
+
+fn maybe_send_desktop_notification(
+    logger: &mut Logger,
+    managed: &ManagedRepo,
+    event: &str,
+    title: &str,
+    message: &str,
+) -> Result<()> {
+    let enabled = match event {
+        "pull" => managed.notification_settings.on_pull,
+        "failure" => managed.notification_settings.on_failure,
+        _ => false,
+    };
+    if !enabled {
+        return Ok(());
+    }
+
+    if let Err(err) = run_desktop_notification(
+        &managed.notification_settings,
+        event,
+        &managed.config.name,
+        managed.syncer.repo_path(),
+        title,
+        message,
+    ) {
+        logger.log(
+            "WARN",
+            &managed.config.name,
+            format!("desktop notification failed: {err}"),
+        )?;
+    }
+
+    Ok(())
 }
 
 fn quote_systemd_arg(arg: &str) -> String {
@@ -1372,6 +1526,13 @@ fn sync_repo(
         &managed.config.name,
         format!("auto-pull complete: {}", managed.syncer.head_summary()?),
     )?;
+    maybe_send_desktop_notification(
+        logger,
+        managed,
+        "pull",
+        "repo-auto-puller",
+        &format!("{} updated successfully", managed.config.name),
+    )?;
     run_pull_hook(
         logger,
         managed,
@@ -1400,6 +1561,13 @@ fn handle_sync_error(
     state_store.update_error(managed, &error)?;
     history_store.append_error(managed, &error)?;
     if managed.last_error.as_deref() != Some(error.as_str()) {
+        maybe_send_desktop_notification(
+            logger,
+            managed,
+            "failure",
+            "repo-auto-puller",
+            &format!("{}: {}", managed.config.name, error),
+        )?;
         run_failure_hook(logger, managed, &error)?;
     }
     managed.last_error = Some(error);
@@ -1760,11 +1928,13 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppConfig, CommandProbe, DefaultsConfig, HistoryRecord, HistoryStore, QuietHoursConfig,
-        RepositoryConfig, StatusEntry, StatusOutput, branch_allowed, build_program_args,
-        decision_blocks_auto_pull, effective_report, in_quiet_hours, infer_repo_name,
-        launchd_plist_path, quote_systemd_arg, render_launchd_plist, render_systemd_service,
-        sanitize_repo_name, systemd_unit_path, upsert_repository, validate_config_schema,
+        AppConfig, CommandProbe, DefaultsConfig, DesktopNotificationsConfig, HistoryRecord,
+        HistoryStore, NotificationSettings, QuietHoursConfig, RepositoryConfig, StatusEntry,
+        StatusOutput, branch_allowed, build_program_args, decision_blocks_auto_pull,
+        effective_report, escape_applescript_text, in_quiet_hours, infer_repo_name,
+        launchd_plist_path, merge_notification_settings, quote_systemd_arg, render_launchd_plist,
+        render_systemd_service, run_desktop_notification, sanitize_repo_name,
+        selected_repositories, systemd_unit_path, upsert_repository, validate_config_schema,
     };
     use chrono::NaiveTime;
     use repo_auto_puller_core::{Snapshot, SyncDecision};
@@ -1800,6 +1970,7 @@ mod tests {
                 dry_run: false,
                 allowed_branches: Vec::new(),
                 quiet_hours: None,
+                desktop_notifications: None,
                 before_pull_command: None,
                 after_pull_command: None,
                 on_failure_command: None,
@@ -1817,6 +1988,7 @@ mod tests {
                 dry_run: true,
                 allowed_branches: vec!["main".into()],
                 quiet_hours: None,
+                desktop_notifications: None,
                 before_pull_command: Some("echo before".into()),
                 after_pull_command: Some("echo after".into()),
                 on_failure_command: Some("echo failed".into()),
@@ -1856,6 +2028,7 @@ mod tests {
                     dry_run: false,
                     allowed_branches: Vec::new(),
                     quiet_hours: None,
+                    desktop_notifications: None,
                     before_pull_command: None,
                     after_pull_command: None,
                     on_failure_command: None,
@@ -1869,6 +2042,7 @@ mod tests {
                     dry_run: false,
                     allowed_branches: Vec::new(),
                     quiet_hours: None,
+                    desktop_notifications: None,
                     before_pull_command: None,
                     after_pull_command: None,
                     on_failure_command: None,
@@ -2044,6 +2218,7 @@ mod tests {
             dry_run: false,
             allowed_branches: Vec::new(),
             quiet_hours: None,
+            desktop_notifications: None,
             before_pull_command: None,
             after_pull_command: None,
             on_failure_command: None,
@@ -2064,6 +2239,7 @@ mod tests {
             dry_run: false,
             allowed_branches: vec!["main".into()],
             quiet_hours: None,
+            desktop_notifications: None,
             before_pull_command: None,
             after_pull_command: None,
             on_failure_command: None,
@@ -2096,6 +2272,7 @@ mod tests {
             dry_run: false,
             allowed_branches: vec!["main".into()],
             quiet_hours: None,
+            desktop_notifications: None,
             before_pull_command: None,
             after_pull_command: None,
             on_failure_command: None,
@@ -2131,6 +2308,7 @@ mod tests {
                 start: "09:00".into(),
                 end: "17:00".into(),
             }),
+            desktop_notifications: None,
             before_pull_command: None,
             after_pull_command: None,
             on_failure_command: None,
@@ -2165,6 +2343,7 @@ mod tests {
                 start: "23:00".into(),
                 end: "07:00".into(),
             }),
+            desktop_notifications: None,
             before_pull_command: None,
             after_pull_command: None,
             on_failure_command: None,
@@ -2189,5 +2368,118 @@ mod tests {
         assert_eq!(late.as_deref(), Some("23:00-07:00"));
         assert_eq!(early.as_deref(), Some("23:00-07:00"));
         assert!(midday.is_none());
+    }
+
+    #[test]
+    fn merges_notification_settings_with_repo_override() {
+        let defaults = DesktopNotificationsConfig {
+            on_pull: Some(false),
+            on_failure: Some(true),
+            command: Some("echo default".into()),
+        };
+        let repo = DesktopNotificationsConfig {
+            on_pull: Some(true),
+            on_failure: None,
+            command: None,
+        };
+
+        let merged = merge_notification_settings(Some(&defaults), Some(&repo));
+
+        assert!(merged.on_pull);
+        assert!(merged.on_failure);
+        assert_eq!(merged.command.as_deref(), Some("echo default"));
+    }
+
+    #[test]
+    fn escapes_applescript_text() {
+        assert_eq!(
+            escape_applescript_text("repo \"main\" \\ updated"),
+            "repo \\\"main\\\" \\\\ updated"
+        );
+    }
+
+    #[test]
+    fn selects_notification_settings_from_defaults() {
+        let config: AppConfig = toml::from_str(
+            r#"
+[defaults.desktop_notifications]
+on_pull = true
+on_failure = true
+command = "echo notify"
+
+[[repositories]]
+name = "openclawcode"
+path = "/tmp/openclawcode"
+"#,
+        )
+        .expect("config should parse");
+
+        let selected = selected_repositories(&config, &[]).expect("repo should be selected");
+
+        assert_eq!(selected.len(), 1);
+        assert!(selected[0].notification_settings.on_pull);
+        assert!(selected[0].notification_settings.on_failure);
+        assert_eq!(
+            selected[0].notification_settings.command.as_deref(),
+            Some("echo notify")
+        );
+    }
+
+    #[test]
+    fn runs_custom_desktop_notification_command() {
+        let unique = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("current time should be after epoch")
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(format!("repo-auto-puller-notify-{unique}"));
+        fs::create_dir_all(&dir).expect("temp dir should be created");
+        let log_path = dir.join("notifications.log");
+        let script_path = dir.join("notify.sh");
+        fs::write(
+            &script_path,
+            format!(
+                "#!/usr/bin/env bash\nprintf '%s|%s|%s\\n' \"$REPO_AUTO_PULLER_EVENT\" \"$REPO_AUTO_PULLER_NOTIFICATION_TITLE\" \"$REPO_AUTO_PULLER_NOTIFICATION_BODY\" >> \"{}\"\n",
+                log_path.display()
+            ),
+        )
+        .expect("script should be written");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = fs::metadata(&script_path)
+                .expect("script metadata should exist")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&script_path, permissions)
+                .expect("script should be made executable");
+        }
+
+        let settings = NotificationSettings {
+            on_pull: true,
+            on_failure: true,
+            command: Some(script_path.display().to_string()),
+        };
+
+        run_desktop_notification(
+            &settings,
+            "pull",
+            "openclawcode",
+            PathBuf::from("/tmp/openclawcode").as_path(),
+            "repo-auto-puller",
+            "openclawcode updated successfully",
+        )
+        .expect("notification command should execute");
+
+        let contents = fs::read_to_string(&log_path).expect("notification log should exist");
+        assert!(contents.contains("pull|repo-auto-puller|openclawcode updated successfully"));
+
+        let _ = fs::remove_file(script_path);
+        let _ = fs::remove_file(log_path);
+        let _ = fs::remove_dir(dir);
     }
 }
