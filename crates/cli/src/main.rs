@@ -147,6 +147,8 @@ struct RepositoryConfig {
     #[serde(default = "default_enabled")]
     enabled: bool,
     #[serde(default)]
+    paused: bool,
+    #[serde(default)]
     dry_run: bool,
     #[serde(default)]
     allowed_branches: Vec<String>,
@@ -491,6 +493,7 @@ fn init_config(config_path: &Path, args: &InitArgs) -> Result<()> {
             path: repo_path.clone(),
             interval_seconds: args.interval,
             enabled: !args.disabled,
+            paused: false,
             dry_run: args.dry_run,
             allowed_branches: Vec::new(),
             on_failure_command: None,
@@ -504,6 +507,7 @@ fn init_config(config_path: &Path, args: &InitArgs) -> Result<()> {
     println!("  config: {}", expand_tilde(config_path).display());
     println!("  interval_seconds: {}", args.interval);
     println!("  enabled: {}", !args.disabled);
+    println!("  paused: false");
     println!("  dry_run: {}", args.dry_run);
     println!("  allowed_branches: []");
     Ok(())
@@ -528,6 +532,15 @@ fn effective_report(
     snapshot: &Snapshot,
     report: &SyncReport,
 ) -> EffectiveReport {
+    if config.paused {
+        return EffectiveReport {
+            decision: "paused".to_owned(),
+            message: format!("{} is paused in config; skipping auto-pull", config.name),
+            level: "WARN",
+            blocks_auto_pull: true,
+        };
+    }
+
     if !branch_allowed(config, &snapshot.branch) {
         return EffectiveReport {
             decision: "branch-not-allowed".to_owned(),
@@ -1392,6 +1405,7 @@ mod tests {
                 path: PathBuf::from("/old"),
                 interval_seconds: 60.0,
                 enabled: true,
+                paused: false,
                 dry_run: false,
                 allowed_branches: Vec::new(),
                 on_failure_command: None,
@@ -1405,6 +1419,7 @@ mod tests {
                 path: PathBuf::from("/new"),
                 interval_seconds: 30.0,
                 enabled: true,
+                paused: false,
                 dry_run: true,
                 allowed_branches: vec!["main".into()],
                 on_failure_command: Some("echo failed".into()),
@@ -1432,6 +1447,7 @@ mod tests {
                     path: PathBuf::from("/one"),
                     interval_seconds: 60.0,
                     enabled: true,
+                    paused: false,
                     dry_run: false,
                     allowed_branches: Vec::new(),
                     on_failure_command: None,
@@ -1441,6 +1457,7 @@ mod tests {
                     path: PathBuf::from("/two"),
                     interval_seconds: 60.0,
                     enabled: true,
+                    paused: false,
                     dry_run: false,
                     allowed_branches: Vec::new(),
                     on_failure_command: None,
@@ -1575,6 +1592,7 @@ mod tests {
             path: PathBuf::from("/tmp/openclawcode"),
             interval_seconds: 60.0,
             enabled: true,
+            paused: false,
             dry_run: false,
             allowed_branches: Vec::new(),
             on_failure_command: None,
@@ -1591,6 +1609,7 @@ mod tests {
             path: PathBuf::from("/tmp/openclawcode"),
             interval_seconds: 60.0,
             enabled: true,
+            paused: false,
             dry_run: false,
             allowed_branches: vec!["main".into()],
             on_failure_command: None,
@@ -1610,5 +1629,34 @@ mod tests {
         assert_eq!(effective.decision, "branch-not-allowed");
         assert!(effective.blocks_auto_pull);
         assert!(effective.message.contains("allowed_branches [main]"));
+    }
+
+    #[test]
+    fn overrides_report_when_repository_is_paused() {
+        let config = RepositoryConfig {
+            name: "openclawcode".into(),
+            path: PathBuf::from("/tmp/openclawcode"),
+            interval_seconds: 60.0,
+            enabled: true,
+            paused: true,
+            dry_run: false,
+            allowed_branches: vec!["main".into()],
+            on_failure_command: None,
+        };
+        let snapshot = Snapshot {
+            branch: "main".into(),
+            upstream: "origin/main".into(),
+            remote: "origin".into(),
+            remote_branch: "main".into(),
+            ahead: 0,
+            behind: 2,
+            dirty: false,
+        };
+        let report = repo_auto_puller_core::RepoSyncer::report(&snapshot);
+        let effective = effective_report(&config, &snapshot, &report);
+
+        assert_eq!(effective.decision, "paused");
+        assert!(effective.blocks_auto_pull);
+        assert!(effective.message.contains("paused in config"));
     }
 }

@@ -103,6 +103,15 @@ path = "/path/to/your/repo"
 allowed_branches = ["main", "release"]
 ```
 
+如果只是想临时停掉某个仓库的自动拉取，但保留配置和状态可见性，可以设：
+
+```toml
+[[repositories]]
+name = "my-repo"
+path = "/path/to/your/repo"
+paused = true
+```
+
 ## 新增：状态和配置检查
 
 查看仓库当前状态和阻塞原因：
