@@ -1,6 +1,6 @@
 [package]
 name = "repo-auto-puller-core"
-version = "0.1.0"
+version = "0.1.1"
 description = "Core sync logic for repo-auto-puller"
 edition.workspace = true
 license.workspace = true

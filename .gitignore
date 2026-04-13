@@ -1,3 +1,5 @@
 /target
+dist/
+repo-auto-puller-*.tar.gz
 __pycache__/
 *.log
