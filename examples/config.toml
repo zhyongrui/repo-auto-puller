@@ -12,3 +12,4 @@ enabled = true
 paused = false
 dry_run = false
 allowed_branches = ["main"]
+# quiet_hours = { start = "23:00", end = "07:00" }

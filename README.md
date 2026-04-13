@@ -120,6 +120,15 @@ before_pull_command = "echo before pull"
 after_pull_command = "echo after pull"
 ```
 
+如果你想让某个仓库在固定时段内不自动拉取，可以设：
+
+```toml
+[[repositories]]
+name = "my-repo"
+path = "/path/to/your/repo"
+quiet_hours = { start = "23:00", end = "07:00" }
+```
+
 ## 新增：状态和配置检查
 
 查看仓库当前状态和阻塞原因：

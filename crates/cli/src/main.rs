@@ -9,7 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use chrono::Local;
+use chrono::{Local, NaiveTime};
 use clap::{Args, Parser, Subcommand};
 use repo_auto_puller_core::{RepoSyncer, Snapshot, SyncDecision, SyncReport};
 use serde::{Deserialize, Serialize};
@@ -141,6 +141,12 @@ struct DefaultsConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+struct QuietHoursConfig {
+    start: String,
+    end: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct RepositoryConfig {
     name: String,
     path: PathBuf,
@@ -154,6 +160,7 @@ struct RepositoryConfig {
     dry_run: bool,
     #[serde(default)]
     allowed_branches: Vec<String>,
+    quiet_hours: Option<QuietHoursConfig>,
     before_pull_command: Option<String>,
     after_pull_command: Option<String>,
     on_failure_command: Option<String>,
@@ -304,6 +311,26 @@ fn validate_config_schema(config: &AppConfig) -> Result<()> {
                     "repository {} has duplicate allowed_branches entry: {}",
                     repo.name,
                     branch
+                );
+            }
+        }
+        if let Some(quiet_hours) = &repo.quiet_hours {
+            let start = parse_quiet_time(&quiet_hours.start).with_context(|| {
+                format!(
+                    "repository {} has invalid quiet_hours.start {}",
+                    repo.name, quiet_hours.start
+                )
+            })?;
+            let end = parse_quiet_time(&quiet_hours.end).with_context(|| {
+                format!(
+                    "repository {} has invalid quiet_hours.end {}",
+                    repo.name, quiet_hours.end
+                )
+            })?;
+            if start == end {
+                bail!(
+                    "repository {} has quiet_hours with identical start and end",
+                    repo.name
                 );
             }
         }
@@ -516,6 +543,7 @@ fn init_config(config_path: &Path, args: &InitArgs) -> Result<()> {
             paused: false,
             dry_run: args.dry_run,
             allowed_branches: Vec::new(),
+            quiet_hours: None,
             before_pull_command: None,
             after_pull_command: None,
             on_failure_command: None,
@@ -532,6 +560,7 @@ fn init_config(config_path: &Path, args: &InitArgs) -> Result<()> {
     println!("  paused: false");
     println!("  dry_run: {}", args.dry_run);
     println!("  allowed_branches: []");
+    println!("  quiet_hours: none");
     Ok(())
 }
 
@@ -549,6 +578,31 @@ fn branch_allowed(config: &RepositoryConfig, branch: &str) -> bool {
     config.allowed_branches.is_empty() || config.allowed_branches.iter().any(|item| item == branch)
 }
 
+fn parse_quiet_time(value: &str) -> Result<NaiveTime> {
+    NaiveTime::parse_from_str(value, "%H:%M")
+        .with_context(|| format!("expected HH:MM, got {value}"))
+}
+
+fn in_quiet_hours(config: &RepositoryConfig, now: NaiveTime) -> Result<Option<String>> {
+    let Some(quiet_hours) = &config.quiet_hours else {
+        return Ok(None);
+    };
+
+    let start = parse_quiet_time(&quiet_hours.start)?;
+    let end = parse_quiet_time(&quiet_hours.end)?;
+    let in_window = if start < end {
+        now >= start && now < end
+    } else {
+        now >= start || now < end
+    };
+
+    if in_window {
+        Ok(Some(format!("{}-{}", quiet_hours.start, quiet_hours.end)))
+    } else {
+        Ok(None)
+    }
+}
+
 fn effective_report(
     config: &RepositoryConfig,
     snapshot: &Snapshot,
@@ -558,6 +612,18 @@ fn effective_report(
         return EffectiveReport {
             decision: "paused".to_owned(),
             message: format!("{} is paused in config; skipping auto-pull", config.name),
+            level: "WARN",
+            blocks_auto_pull: true,
+        };
+    }
+
+    if let Ok(Some(window)) = in_quiet_hours(config, Local::now().time()) {
+        return EffectiveReport {
+            decision: "quiet-hours".to_owned(),
+            message: format!(
+                "{} is inside quiet_hours {}; skipping auto-pull",
+                config.name, window
+            ),
             level: "WARN",
             blocks_auto_pull: true,
         };
@@ -1457,12 +1523,13 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppConfig, CommandProbe, DefaultsConfig, RepositoryConfig, StatusEntry, StatusOutput,
-        branch_allowed, build_program_args, decision_blocks_auto_pull, effective_report,
-        infer_repo_name, launchd_plist_path, quote_systemd_arg, render_launchd_plist,
-        render_systemd_service, sanitize_repo_name, systemd_unit_path, upsert_repository,
-        validate_config_schema,
+        AppConfig, CommandProbe, DefaultsConfig, QuietHoursConfig, RepositoryConfig, StatusEntry,
+        StatusOutput, branch_allowed, build_program_args, decision_blocks_auto_pull,
+        effective_report, in_quiet_hours, infer_repo_name, launchd_plist_path, quote_systemd_arg,
+        render_launchd_plist, render_systemd_service, sanitize_repo_name, systemd_unit_path,
+        upsert_repository, validate_config_schema,
     };
+    use chrono::NaiveTime;
     use repo_auto_puller_core::{Snapshot, SyncDecision};
     use std::path::PathBuf;
 
@@ -1494,6 +1561,7 @@ mod tests {
                 paused: false,
                 dry_run: false,
                 allowed_branches: Vec::new(),
+                quiet_hours: None,
                 before_pull_command: None,
                 after_pull_command: None,
                 on_failure_command: None,
@@ -1510,6 +1578,7 @@ mod tests {
                 paused: false,
                 dry_run: true,
                 allowed_branches: vec!["main".into()],
+                quiet_hours: None,
                 before_pull_command: Some("echo before".into()),
                 after_pull_command: Some("echo after".into()),
                 on_failure_command: Some("echo failed".into()),
@@ -1548,6 +1617,7 @@ mod tests {
                     paused: false,
                     dry_run: false,
                     allowed_branches: Vec::new(),
+                    quiet_hours: None,
                     before_pull_command: None,
                     after_pull_command: None,
                     on_failure_command: None,
@@ -1560,6 +1630,7 @@ mod tests {
                     paused: false,
                     dry_run: false,
                     allowed_branches: Vec::new(),
+                    quiet_hours: None,
                     before_pull_command: None,
                     after_pull_command: None,
                     on_failure_command: None,
@@ -1697,6 +1768,7 @@ mod tests {
             paused: false,
             dry_run: false,
             allowed_branches: Vec::new(),
+            quiet_hours: None,
             before_pull_command: None,
             after_pull_command: None,
             on_failure_command: None,
@@ -1716,6 +1788,7 @@ mod tests {
             paused: false,
             dry_run: false,
             allowed_branches: vec!["main".into()],
+            quiet_hours: None,
             before_pull_command: None,
             after_pull_command: None,
             on_failure_command: None,
@@ -1747,6 +1820,7 @@ mod tests {
             paused: true,
             dry_run: false,
             allowed_branches: vec!["main".into()],
+            quiet_hours: None,
             before_pull_command: None,
             after_pull_command: None,
             on_failure_command: None,
@@ -1766,5 +1840,79 @@ mod tests {
         assert_eq!(effective.decision, "paused");
         assert!(effective.blocks_auto_pull);
         assert!(effective.message.contains("paused in config"));
+    }
+
+    #[test]
+    fn matches_quiet_hours_within_same_day_window() {
+        let config = RepositoryConfig {
+            name: "openclawcode".into(),
+            path: PathBuf::from("/tmp/openclawcode"),
+            interval_seconds: 60.0,
+            enabled: true,
+            paused: false,
+            dry_run: false,
+            allowed_branches: Vec::new(),
+            quiet_hours: Some(QuietHoursConfig {
+                start: "09:00".into(),
+                end: "17:00".into(),
+            }),
+            before_pull_command: None,
+            after_pull_command: None,
+            on_failure_command: None,
+        };
+
+        let hit = in_quiet_hours(
+            &config,
+            NaiveTime::from_hms_opt(10, 30, 0).expect("valid time"),
+        )
+        .expect("should parse quiet hours");
+        let miss = in_quiet_hours(
+            &config,
+            NaiveTime::from_hms_opt(18, 0, 0).expect("valid time"),
+        )
+        .expect("should parse quiet hours");
+
+        assert_eq!(hit.as_deref(), Some("09:00-17:00"));
+        assert!(miss.is_none());
+    }
+
+    #[test]
+    fn matches_quiet_hours_across_midnight() {
+        let config = RepositoryConfig {
+            name: "openclawcode".into(),
+            path: PathBuf::from("/tmp/openclawcode"),
+            interval_seconds: 60.0,
+            enabled: true,
+            paused: false,
+            dry_run: false,
+            allowed_branches: Vec::new(),
+            quiet_hours: Some(QuietHoursConfig {
+                start: "23:00".into(),
+                end: "07:00".into(),
+            }),
+            before_pull_command: None,
+            after_pull_command: None,
+            on_failure_command: None,
+        };
+
+        let late = in_quiet_hours(
+            &config,
+            NaiveTime::from_hms_opt(23, 30, 0).expect("valid time"),
+        )
+        .expect("should parse quiet hours");
+        let early = in_quiet_hours(
+            &config,
+            NaiveTime::from_hms_opt(6, 30, 0).expect("valid time"),
+        )
+        .expect("should parse quiet hours");
+        let midday = in_quiet_hours(
+            &config,
+            NaiveTime::from_hms_opt(12, 0, 0).expect("valid time"),
+        )
+        .expect("should parse quiet hours");
+
+        assert_eq!(late.as_deref(), Some("23:00-07:00"));
+        assert_eq!(early.as_deref(), Some("23:00-07:00"));
+        assert!(midday.is_none());
     }
 }
