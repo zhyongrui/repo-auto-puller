@@ -34,7 +34,7 @@
 - `crates/cli`: 配置加载、调度、日志、信号处理
 - `examples/config.toml`: 通用配置示例
 - `deploy/systemd`: 服务模板
-- `scripts/install.sh`: Linux 安装脚本
+- `scripts/install.sh`: Linux/macOS 安装脚本
 - `docs/manual-install.md`: 给最终用户看的安装文档
 - `docs/agent-install.md`: 给代理看的安装部署文档
 - `docs/product-plan.md`: 产品路线图
@@ -49,6 +49,7 @@
 - 不要默认改用户仓库的 remote。
 - 不要默认清理、stash、覆盖用户未提交改动。
 - 不要把“服务在跑”直接说成“已经会自动拉取”，必须区分服务状态和实际拉取条件。
+- 如果任务是连续产品开发，默认按“小步实现 -> 验证 -> 提交 -> 推送”的节奏推进，不把多个不相关功能揉进同一个提交。
 
 ## 开发与验证
 
