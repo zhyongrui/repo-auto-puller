@@ -201,6 +201,15 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml dashboard --lis
 http://127.0.0.1:8787
 ```
 
+状态页上的按钮可以直接暂停或恢复某个仓库的自动拉取。
+
+如果你更想手动控制，也可以直接运行：
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml pause --repo my-repo
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml resume --repo my-repo
+```
+
 ### 运行诊断
 
 安装好配置和服务后，推荐再跑一遍：

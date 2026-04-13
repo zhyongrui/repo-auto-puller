@@ -37,6 +37,8 @@ enum Commands {
     Init(InitArgs),
     Status(StatusArgs),
     Dashboard(DashboardArgs),
+    Pause(RepoToggleArgs),
+    Resume(RepoToggleArgs),
     CheckConfig,
     Doctor(DoctorArgs),
     InstallService(InstallServiceArgs),
@@ -83,6 +85,12 @@ struct DashboardArgs {
 
     #[arg(long, default_value_t = 15)]
     refresh_seconds: u64,
+}
+
+#[derive(Debug, Args)]
+struct RepoToggleArgs {
+    #[arg(long)]
+    repo: String,
 }
 
 #[derive(Debug, Args)]
@@ -807,6 +815,23 @@ fn write_config(path: &Path, config: &AppConfig) -> Result<()> {
     ensure_parent_dir(&path)?;
     let toml = toml::to_string_pretty(config).context("failed to serialize config")?;
     fs::write(&path, toml).with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
+}
+
+fn set_repository_paused(config_path: &Path, repo_name: &str, paused: bool) -> Result<()> {
+    let mut config = load_config(config_path)?;
+    let repo = config
+        .repositories
+        .iter_mut()
+        .find(|repo| repo.name == repo_name)
+        .with_context(|| format!("repository not found in config: {repo_name}"))?;
+    repo.paused = paused;
+    write_config(config_path, &config)?;
+    println!(
+        "{} repository {}",
+        if paused { "Paused" } else { "Resumed" },
+        repo_name
+    );
     Ok(())
 }
 
@@ -1851,6 +1876,44 @@ fn escape_html(text: &str) -> String {
         .replace('"', "&quot;")
 }
 
+fn url_encode_component(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
+fn url_decode_component(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let Ok(hex) = std::str::from_utf8(&bytes[index + 1..index + 3])
+            && let Ok(byte) = u8::from_str_radix(hex, 16)
+        {
+            decoded.push(byte);
+            index += 3;
+            continue;
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).to_string()
+}
+
+fn repo_name_from_path(path: &str, prefix: &str) -> Option<String> {
+    path.strip_prefix(prefix)
+        .map(url_decode_component)
+        .filter(|value| !value.is_empty())
+}
+
 fn render_dashboard_html(
     selected: &[SelectedRepo],
     state: &PersistedState,
@@ -1896,6 +1959,16 @@ fn render_dashboard_html(
         let updated_at = persisted
             .map(|entry| entry.updated_at.as_str())
             .unwrap_or("Never");
+        let action_path = if repo.config.paused {
+            format!("/resume/{}", url_encode_component(&repo.config.name))
+        } else {
+            format!("/pause/{}", url_encode_component(&repo.config.name))
+        };
+        let action_label = if repo.config.paused {
+            "Resume Auto Pull"
+        } else {
+            "Pause Auto Pull"
+        };
 
         cards.push_str(&format!(
             r#"<section class="card {status_class}">
@@ -1910,6 +1983,7 @@ fn render_dashboard_html(
 <div><dt>Behind</dt><dd>{behind}</dd></div>
 <div><dt>Dirty</dt><dd>{dirty}</dd></div>
 </dl>
+<a class="action" href="{action_path}">{action_label}</a>
 </section>
 "#,
             status_class = status_class,
@@ -1922,6 +1996,8 @@ fn render_dashboard_html(
             ahead = escape_html(&ahead),
             behind = escape_html(&behind),
             dirty = escape_html(&dirty),
+            action_path = escape_html(&action_path),
+            action_label = action_label,
         ));
     }
 
@@ -1991,6 +2067,15 @@ h1 {{
   margin: 0 0 10px;
   font-size: 1.35rem;
 }}
+.action {{
+  display: inline-block;
+  margin-top: 16px;
+  padding: 10px 14px;
+  border-radius: 999px;
+  text-decoration: none;
+  color: white;
+  background: linear-gradient(135deg, #1e1c18, #6a4b2e);
+}}
 .summary {{
   margin: 0 0 16px;
   color: var(--muted);
@@ -2033,8 +2118,6 @@ dd {{
 }
 
 fn serve_dashboard(config_path: &Path, args: &DashboardArgs) -> Result<()> {
-    let config = load_config(config_path)?;
-    let selected = selected_repositories(&config, &args.repo)?;
     let listener = TcpListener::bind(&args.listen)
         .with_context(|| format!("failed to bind dashboard listener on {}", args.listen))?;
 
@@ -2053,26 +2136,39 @@ fn serve_dashboard(config_path: &Path, args: &DashboardArgs) -> Result<()> {
         let bytes_read = stream.read(&mut buffer).unwrap_or(0);
         let request = String::from_utf8_lossy(&buffer[..bytes_read]);
         let request_line = request.lines().next().unwrap_or_default();
-        let state_store = build_state_store(&config)?;
-        let (status_line, body) =
-            if request_line.starts_with("GET / ") || request_line.starts_with("GET /HTTP") {
+        let path = request_line
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or("/")
+            .to_owned();
+        let (status_line, extra_headers, body) =
+            if let Some(repo_name) = repo_name_from_path(&path, "/pause/") {
+                set_repository_paused(config_path, &repo_name, true)?;
+                ("HTTP/1.1 303 See Other", "Location: /\r\n", String::new())
+            } else if let Some(repo_name) = repo_name_from_path(&path, "/resume/") {
+                set_repository_paused(config_path, &repo_name, false)?;
+                ("HTTP/1.1 303 See Other", "Location: /\r\n", String::new())
+            } else if path == "/" {
+                let config = load_config(config_path)?;
+                let selected = selected_repositories(&config, &args.repo)?;
+                let state_store = build_state_store(&config)?;
                 (
                     "HTTP/1.1 200 OK",
+                    "",
                     render_dashboard_html(&selected, &state_store.state, args.refresh_seconds),
                 )
-            } else if request_line.starts_with("GET /healthz") {
-                ("HTTP/1.1 200 OK", "ok".to_owned())
+            } else if path == "/healthz" {
+                ("HTTP/1.1 200 OK", "", "ok".to_owned())
             } else {
-                ("HTTP/1.1 404 Not Found", "not found".to_owned())
+                ("HTTP/1.1 404 Not Found", "", "not found".to_owned())
             };
-        let content_type = if status_line.contains("200 OK") && body.starts_with("<!DOCTYPE html>")
-        {
+        let content_type = if body.starts_with("<!DOCTYPE html>") {
             "text/html; charset=utf-8"
         } else {
             "text/plain; charset=utf-8"
         };
         let response = format!(
-            "{status_line}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            "{status_line}\r\nContent-Type: {content_type}\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{}",
             body.len(),
             body
         );
@@ -2375,6 +2471,8 @@ fn main() -> Result<()> {
         Some(Commands::Init(args)) => init_config(&config, &args),
         Some(Commands::Status(args)) => render_status(&config, &args),
         Some(Commands::Dashboard(args)) => serve_dashboard(&config, &args),
+        Some(Commands::Pause(args)) => set_repository_paused(&config, &args.repo, true),
+        Some(Commands::Resume(args)) => set_repository_paused(&config, &args.repo, false),
         Some(Commands::CheckConfig) => check_config(&config),
         Some(Commands::Doctor(args)) => render_doctor(&config, &args),
         Some(Commands::InstallService(args)) => install_service(&config, &args),
@@ -2390,11 +2488,11 @@ mod tests {
         HistoryStore, NotificationSettings, PersistedRepoState, PersistedState, QuietHoursConfig,
         RepositoryConfig, StatusEntry, StatusOutput, branch_allowed, build_program_args,
         decision_blocks_auto_pull, effective_report, escape_applescript_text, in_quiet_hours,
-        infer_repo_name, launchd_plist_path, merge_notification_settings, quote_systemd_arg,
-        quote_windows_arg, render_dashboard_html, render_launchd_plist, render_systemd_service,
-        render_windows_command_script, run_desktop_notification, sanitize_repo_name,
-        selected_repositories, systemd_unit_path, upsert_repository, validate_config_schema,
-        windows_task_script_path,
+        infer_repo_name, launchd_plist_path, load_config, merge_notification_settings,
+        quote_systemd_arg, quote_windows_arg, render_dashboard_html, render_launchd_plist,
+        render_systemd_service, render_windows_command_script, run_desktop_notification,
+        sanitize_repo_name, selected_repositories, set_repository_paused, systemd_unit_path,
+        upsert_repository, validate_config_schema, windows_task_script_path,
     };
     use chrono::NaiveTime;
     use repo_auto_puller_core::{Snapshot, SyncDecision};
@@ -3009,5 +3107,37 @@ path = "/tmp/openclawcode"
         assert!(html.contains("openclawcode"));
         assert!(html.contains("fetch failed"));
         assert!(html.contains("2026-04-13T17:00:00+00:00"));
+        assert!(html.contains("/pause/openclawcode"));
+    }
+
+    #[test]
+    fn toggles_repository_pause_in_config() {
+        let path = std::env::temp_dir().join(format!(
+            "repo-auto-puller-config-{}-{}.toml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("current time should be after epoch")
+                .as_nanos()
+        ));
+        fs::write(
+            &path,
+            r#"
+[[repositories]]
+name = "openclawcode"
+path = "/tmp/openclawcode"
+"#,
+        )
+        .expect("config file should be written");
+
+        set_repository_paused(&path, "openclawcode", true).expect("pause should succeed");
+        let paused = load_config(&path).expect("config should reload");
+        assert!(paused.repositories[0].paused);
+
+        set_repository_paused(&path, "openclawcode", false).expect("resume should succeed");
+        let resumed = load_config(&path).expect("config should reload");
+        assert!(!resumed.repositories[0].paused);
+
+        let _ = fs::remove_file(path);
     }
 }

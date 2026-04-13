@@ -186,6 +186,13 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml status --repo m
 repo-auto-puller --config ~/.config/repo-auto-puller/config.toml dashboard --listen 127.0.0.1:8787
 ```
 
+如果你想直接在命令行暂停或恢复某个仓库：
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml pause --repo my-repo
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml resume --repo my-repo
+```
+
 检查配置是否有效、仓库路径是否能初始化：
 
 ```bash
