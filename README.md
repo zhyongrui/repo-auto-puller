@@ -13,7 +13,8 @@
 ## 两套使用文档
 
 - 用户版安装手册：`docs/manual-install.md`
-- Agent 通用操作手册：`AGENTS.md`
+- 代理安装手册：`docs/agent-install.md`
+- 仓库代理规范：`AGENTS.md`
 
 如果你是最终用户，先看用户版。
 如果你是帮用户安装和配置的 Agent，先看 Agent 版。
@@ -56,7 +57,8 @@
 - `deploy/systemd/repo-auto-puller.service.template`: 通用 systemd 模板
 - `scripts/install.sh`: Linux 安装脚本
 - `docs/manual-install.md`: 用户版手册
-- `AGENTS.md`: 给 Codex、Claude Code、OpenClaw 等代理的安装使用说明
+- `docs/agent-install.md`: 给 Codex、Claude Code、OpenClaw 等代理的安装使用说明
+- `AGENTS.md`: 给代理看的仓库工作规范与文档导航
 - `docs/product-plan.md`: 产品路线图
 - `docs/rust-architecture.md`: Rust 技术设计
 

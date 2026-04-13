@@ -1,157 +1,75 @@
-# Agent Playbook
+# AGENTS
 
 这是本仓库面向代理的规范入口。如果仓库里已经存在 `AGENTS.md`，应优先更新这份文件，而不是再创建一份平行文档。
 
-这份文档是给各类代理式安装助手看的，不是给最终用户看的。
+## 这个文件是做什么的
 
-适用对象包括但不限于：
+这份文档的职责是：
 
-- Codex
-- Claude Code
-- OpenClaw
-- 其他能在用户机器上执行安装与配置操作的代理
+- 告诉代理这个仓库是什么
+- 告诉代理仓库里的主要文档入口
+- 约束代理在本仓库里开发、改代码、验证、提交时的基本行为
 
-目标：把 `repo-auto-puller` 安装并配置到用户指定的 Git 仓库上，让它在本机后台运行。
+它不是最终用户安装手册，也不应承载完整的产品部署流程。
 
-## 上轮已验证的关键信息
+如果任务是“替用户安装和部署 `repo-auto-puller`”，看：
 
-下面这些不是假设，而是在这台机器上真实遇到过的情况：
+- `docs/agent-install.md`
 
-- 普通用户不应被要求先安装 Rust。
-- 本项目现在同时有用户版文档和 Agent 文档，Agent 应优先读取本文件。
-- `repo-auto-puller` 已在这台机器上成功编译通过，`cargo test`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo build --release -p repo-auto-puller` 都已通过。
-- 这台机器上已经把 `repo-auto-puller` 实际部署到了 `openclawcode` 仓库上。
-- 当前机器上的实例化部署路径是：
-  - 二进制：`/home/lyz/.local/bin/repo-auto-puller`
-  - 配置：`/home/lyz/pros/repo-auto-puller/config.toml`
-  - 日志：`/home/lyz/.local/state/repo-auto-puller/repo-auto-puller.log`
-  - 服务：`openclawcode-auto-puller.service`
-- 上面这些路径属于当前机器实例，不应被当成所有用户的默认路径写死到通用安装逻辑里。
-- `openclawcode` 当前工作区是脏的，而且落后远端若干提交；工具会按设计跳过自动拉取，这是正确行为，不是故障。
-- 这台机器曾经出现过对 `https://github.com/zhyongrui/openclawcode.git` 的 `gnutls_handshake()` TLS 错误；这是远端访问问题，不是同步决策逻辑的问题。
-- 这台机器当前没有可用的 GitHub SSH key，`git@github.com` 连接会 `Permission denied (publickey)`；不要默认把用户仓库 remote 切到 SSH 来“修复” fetch。
-- 替换正在运行的二进制时，直接 `cp` 到 `~/.local/bin/repo-auto-puller` 可能报 `Text file busy`；应先停服务，并确保没有残留进程占用该文件。
+如果任务是“给最终用户展示安装方式”，看：
 
-## 原则
+- `docs/manual-install.md`
 
-- 默认优先使用预编译二进制，不要默认要求用户安装 Rust。
-- 只有在没有可用发布产物、且用户明确同意时，才走源码构建。
-- 配置和服务文件应写到用户主目录下，而不是硬编码仓库目录内。
-- 安装后必须验证服务状态和日志。
-- 如果仓库工作区是脏的，告诉用户“工具已工作，但会按安全策略跳过自动拉取”。
+如果任务是“给人解释项目本身”，看：
 
-## 推荐安装流程
+- `README.md`
 
-### 1. 收集环境信息
+## 仓库概览
 
-检查：
+`repo-auto-puller` 是一个本地优先的 Git 自动拉取工具。
 
-- 操作系统
-- CPU 架构
-- 用户主目录
-- 是否有 `systemd --user`
-- 目标仓库路径
-- 目标仓库当前 remote 与分支状态
+主要结构：
 
-### 2. 优先使用预编译二进制
+- `crates/core`: Git 状态读取与同步决策
+- `crates/cli`: 配置加载、调度、日志、信号处理
+- `examples/config.toml`: 通用配置示例
+- `deploy/systemd`: 服务模板
+- `scripts/install.sh`: Linux 安装脚本
+- `docs/manual-install.md`: 给最终用户看的安装文档
+- `docs/agent-install.md`: 给代理看的安装部署文档
+- `docs/product-plan.md`: 产品路线图
+- `docs/rust-architecture.md`: Rust 技术设计
 
-优先方案：
+## 代理工作规则
 
-- 从 GitHub Releases 下载对应平台的压缩包
-- 解压得到 `repo-auto-puller`
-- 安装到 `~/.local/bin/repo-auto-puller`
+- 优先保持文档职责清晰，不要把用户手册、代理安装手册、仓库开发规范混在同一份文件里。
+- 如果任务涉及安装部署，优先更新 `docs/agent-install.md`，不要把完整部署流程塞回 `AGENTS.md`。
+- 不要把当前机器上的实例化路径硬编码成所有用户的默认值，除非任务明确要求面向这台机器。
+- 不要提交本地构建产物或运行时产物。
+- 不要默认改用户仓库的 remote。
+- 不要默认清理、stash、覆盖用户未提交改动。
+- 不要把“服务在跑”直接说成“已经会自动拉取”，必须区分服务状态和实际拉取条件。
 
-只有以下情况才考虑源码构建：
+## 开发与验证
 
-- 还没有发布产物
-- 用户就是开发者
-- 用户明确要求源码安装
+本仓库的常用命令：
 
-### 3. 生成用户配置
+```bash
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo build --release -p repo-auto-puller
+```
 
-把配置写到：
+如果改了 shell 安装脚本，也应至少检查：
 
-- `~/.config/repo-auto-puller/config.toml`
+```bash
+bash -n scripts/install.sh
+```
 
-配置应至少包含：
+## 文档导航
 
-- 仓库名称
-- 仓库路径
-- 轮询间隔
-- 是否启用
-- 日志文件路径
-
-除非用户明确要求，不要把用户机器上的临时绝对路径提交回仓库。
-
-### 4. 安装用户服务
-
-优先使用用户级 systemd：
-
-- 服务文件路径：`~/.config/systemd/user/repo-auto-puller.service`
-- 启动方式：`systemctl --user enable --now repo-auto-puller.service`
-
-如果用户只想临时运行，可直接前台运行二进制。
-
-### 5. 验证
-
-安装完成后必须验证：
-
-- `systemctl --user status repo-auto-puller.service`
-- 日志文件是否持续写入
-- 至少执行一次真实检查
-
-建议额外确认：
-
-- 当前仓库是否工作区脏
-- 当前仓库是否 behind / ahead / diverged
-- 当前远端是否能正常 `fetch`
-- 如果服务已启动但没有拉取，具体是保护策略导致，还是网络 / 凭据导致
-
-### 6. 向用户解释状态
-
-对用户的说明必须清楚区分以下几种情况：
-
-- 已成功启动并正常检查
-- 因工作区脏而跳过自动拉取
-- 因分叉而跳过自动拉取
-- 因本地领先而跳过自动拉取
-- 因远端网络或凭据问题而无法 fetch
-
-## 针对这个仓库的额外注意事项
-
-- 本仓库里已经存在用户版和 Agent 版两类文档；更新时应保持角色边界清晰：
-  - `docs/manual-install.md` 给最终用户
-  - `AGENTS.md` 给代理
-- 本仓库支持通用安装，也支持像 `openclawcode` 这样为某个具体仓库做实例化部署；不要把实例化部署细节误写成通用默认值。
-- 通用服务模板应使用 `repo-auto-puller.service` 这类中性命名；只有在为具体仓库落地时，才用 `openclawcode-auto-puller.service` 这样的名字。
-- 当前日志显示 `openclawcode` 持续因为工作区脏而跳过拉取。如果代理要向用户汇报状态，应明确说“工具已生效，但当前不会自动拉取”，而不是简单说“工具坏了”。
-
-## 二进制更新注意事项
-
-如果需要在用户机器上升级一个已经运行中的实例，推荐顺序是：
-
-1. `systemctl --user stop <service>`
-2. 确认没有残留进程占用二进制
-3. 再覆盖 `~/.local/bin/repo-auto-puller`
-4. `systemctl --user start <service>`
-5. 重新看 `status` 和日志
-
-不要在服务运行时直接覆盖二进制文件。
-
-## 给 Agent 的推荐交付说法
-
-安装完成后，建议明确告诉用户：
-
-- 工具已经部署到哪个仓库
-- 配置文件在哪
-- 服务名是什么
-- 二进制路径在哪
-- 现在是否真的能拉取
-- 如果不能，具体是因为脏工作区、凭据还是网络问题
-
-## 不要做的事
-
-- 不要默认改用户仓库的 remote
-- 不要默认清理或 stash 用户未提交改动
-- 不要把“服务已运行”说成“已经会自动拉取”，除非 fetch 和决策链路都正常
-- 不要要求普通用户先安装 Rust，除非没有发布包可用
+- 项目入口：`README.md`
+- 用户安装：`docs/manual-install.md`
+- 代理安装：`docs/agent-install.md`
+- 产品方向：`docs/product-plan.md`
+- 技术架构：`docs/rust-architecture.md`
