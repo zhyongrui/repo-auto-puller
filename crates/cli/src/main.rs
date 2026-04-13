@@ -134,6 +134,7 @@ struct AppConfig {
 struct DefaultsConfig {
     log_file: Option<PathBuf>,
     state_file: Option<PathBuf>,
+    history_file: Option<PathBuf>,
     #[serde(default)]
     verbose: bool,
     before_pull_command: Option<String>,
@@ -231,6 +232,22 @@ struct PersistedRepoState {
     error: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct HistoryRecord {
+    recorded_at: String,
+    name: String,
+    path: String,
+    level: String,
+    branch: Option<String>,
+    upstream: Option<String>,
+    ahead: Option<u32>,
+    behind: Option<u32>,
+    dirty: Option<bool>,
+    decision: Option<String>,
+    message: Option<String>,
+    error: Option<String>,
+}
+
 struct CommandProbe {
     ok: bool,
     detail: String,
@@ -246,6 +263,10 @@ struct EffectiveReport {
 struct StateStore {
     path: PathBuf,
     state: PersistedState,
+}
+
+struct HistoryStore {
+    path: PathBuf,
 }
 
 impl Logger {
@@ -317,7 +338,7 @@ impl StateStore {
             PersistedRepoState {
                 name: managed.config.name.clone(),
                 path: managed.syncer.repo_path().display().to_string(),
-                updated_at: Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string(),
+                updated_at: current_timestamp(),
                 level: effective.level.to_owned(),
                 branch: Some(snapshot.branch.clone()),
                 upstream: Some(snapshot.upstream.clone()),
@@ -338,7 +359,7 @@ impl StateStore {
             PersistedRepoState {
                 name: managed.config.name.clone(),
                 path: managed.syncer.repo_path().display().to_string(),
-                updated_at: Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string(),
+                updated_at: current_timestamp(),
                 level: "ERROR".to_owned(),
                 branch: None,
                 upstream: None,
@@ -354,12 +375,76 @@ impl StateStore {
     }
 }
 
+impl HistoryStore {
+    fn new(path: &Path) -> Self {
+        Self {
+            path: expand_tilde(path),
+        }
+    }
+
+    fn append(&self, record: &HistoryRecord) -> Result<()> {
+        ensure_parent_dir(&self.path)?;
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .with_context(|| format!("failed to open history file {}", self.path.display()))?;
+        serde_json::to_writer(&mut file, record).context("failed to serialize history record")?;
+        writeln!(file).context("failed to append history newline")?;
+        file.flush().context("failed to flush history file")?;
+        Ok(())
+    }
+
+    fn append_success(
+        &self,
+        managed: &ManagedRepo,
+        snapshot: &Snapshot,
+        effective: &EffectiveReport,
+    ) -> Result<()> {
+        self.append(&HistoryRecord {
+            recorded_at: current_timestamp(),
+            name: managed.config.name.clone(),
+            path: managed.syncer.repo_path().display().to_string(),
+            level: effective.level.to_owned(),
+            branch: Some(snapshot.branch.clone()),
+            upstream: Some(snapshot.upstream.clone()),
+            ahead: Some(snapshot.ahead),
+            behind: Some(snapshot.behind),
+            dirty: Some(snapshot.dirty),
+            decision: Some(effective.decision.clone()),
+            message: Some(effective.message.clone()),
+            error: None,
+        })
+    }
+
+    fn append_error(&self, managed: &ManagedRepo, error: &str) -> Result<()> {
+        self.append(&HistoryRecord {
+            recorded_at: current_timestamp(),
+            name: managed.config.name.clone(),
+            path: managed.syncer.repo_path().display().to_string(),
+            level: "ERROR".to_owned(),
+            branch: None,
+            upstream: None,
+            ahead: None,
+            behind: None,
+            dirty: None,
+            decision: None,
+            message: None,
+            error: Some(error.to_owned()),
+        })
+    }
+}
+
 fn default_interval_seconds() -> f64 {
     60.0
 }
 
 fn default_enabled() -> bool {
     true
+}
+
+fn current_timestamp() -> String {
+    Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string()
 }
 
 fn load_config(path: &Path) -> Result<AppConfig> {
@@ -458,6 +543,15 @@ fn build_state_store(config: &AppConfig) -> Result<StateStore> {
     StateStore::load(&path)
 }
 
+fn build_history_store(config: &AppConfig) -> HistoryStore {
+    let path = config
+        .defaults
+        .history_file
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("~/.local/state/repo-auto-puller/history.jsonl"));
+    HistoryStore::new(&path)
+}
+
 fn selected_repositories(config: &AppConfig, selected: &[String]) -> Result<Vec<SelectedRepo>> {
     let mut repos = Vec::new();
 
@@ -502,9 +596,10 @@ fn selected_repositories(config: &AppConfig, selected: &[String]) -> Result<Vec<
 fn build_managed_repos(
     config: AppConfig,
     run_args: &RunArgs,
-) -> Result<(Logger, StateStore, bool, Vec<ManagedRepo>)> {
+) -> Result<(Logger, StateStore, HistoryStore, bool, Vec<ManagedRepo>)> {
     let logger = build_logger(&config)?;
     let state_store = build_state_store(&config)?;
+    let history_store = build_history_store(&config);
     let verbose = run_args.verbose || config.defaults.verbose;
     let repos = selected_repositories(&config, &run_args.repo)?;
     let mut managed = Vec::with_capacity(repos.len());
@@ -524,7 +619,7 @@ fn build_managed_repos(
         });
     }
 
-    Ok((logger, state_store, verbose, managed))
+    Ok((logger, state_store, history_store, verbose, managed))
 }
 
 fn expand_tilde(path: &Path) -> PathBuf {
@@ -635,6 +730,9 @@ fn init_config(config_path: &Path, args: &InitArgs) -> Result<()> {
                 "~/.local/state/repo-auto-puller/repo-auto-puller.log",
             )),
             state_file: Some(PathBuf::from("~/.local/state/repo-auto-puller/status.json")),
+            history_file: Some(PathBuf::from(
+                "~/.local/state/repo-auto-puller/history.jsonl",
+            )),
             verbose: false,
             before_pull_command: None,
             after_pull_command: None,
@@ -1214,6 +1312,7 @@ fn run_pull_hook(
 fn sync_repo(
     logger: &mut Logger,
     state_store: &mut StateStore,
+    history_store: &HistoryStore,
     managed: &mut ManagedRepo,
     global_dry_run: bool,
     verbose: bool,
@@ -1228,11 +1327,10 @@ fn sync_repo(
         logger.log(effective.level, &managed.config.name, &effective.message)?;
         managed.last_message = Some(effective.message.clone());
     }
-    state_store.update_success(managed, &snapshot, &effective)?;
-
-    managed.last_error = None;
-
     if effective.blocks_auto_pull {
+        state_store.update_success(managed, &snapshot, &effective)?;
+        history_store.append_success(managed, &snapshot, &effective)?;
+        managed.last_error = None;
         return Ok(());
     }
 
@@ -1245,6 +1343,9 @@ fn sync_repo(
                 snapshot.remote, snapshot.remote_branch, snapshot.branch
             ),
         )?;
+        state_store.update_success(managed, &snapshot, &effective)?;
+        history_store.append_success(managed, &snapshot, &effective)?;
+        managed.last_error = None;
         return Ok(());
     }
 
@@ -1279,18 +1380,25 @@ fn sync_repo(
         &snapshot,
         false,
     )?;
+    let (post_snapshot, post_report) = probe_repository(&managed.syncer, false)?;
+    let post_effective = effective_report(&managed.config, &post_snapshot, &post_report);
+    state_store.update_success(managed, &post_snapshot, &post_effective)?;
+    history_store.append_success(managed, &post_snapshot, &post_effective)?;
+    managed.last_error = None;
     Ok(())
 }
 
 fn handle_sync_error(
     logger: &mut Logger,
     state_store: &mut StateStore,
+    history_store: &HistoryStore,
     managed: &mut ManagedRepo,
     err: anyhow::Error,
 ) -> Result<()> {
     let error = err.to_string();
     logger.log("ERROR", &managed.config.name, &error)?;
     state_store.update_error(managed, &error)?;
+    history_store.append_error(managed, &error)?;
     if managed.last_error.as_deref() != Some(error.as_str()) {
         run_failure_hook(logger, managed, &error)?;
     }
@@ -1545,7 +1653,8 @@ fn check_config(config_path: &Path) -> Result<()> {
 
 fn run(config_path: &Path, run_args: RunArgs) -> Result<()> {
     let config = load_config(config_path)?;
-    let (mut logger, mut state_store, verbose, mut repos) = build_managed_repos(config, &run_args)?;
+    let (mut logger, mut state_store, history_store, verbose, mut repos) =
+        build_managed_repos(config, &run_args)?;
 
     let keep_running = Arc::new(AtomicBool::new(true));
     let signal_flag = Arc::clone(&keep_running);
@@ -1559,11 +1668,12 @@ fn run(config_path: &Path, run_args: RunArgs) -> Result<()> {
             if let Err(err) = sync_repo(
                 &mut logger,
                 &mut state_store,
+                &history_store,
                 managed,
                 run_args.dry_run,
                 verbose,
             ) {
-                handle_sync_error(&mut logger, &mut state_store, managed, err)?;
+                handle_sync_error(&mut logger, &mut state_store, &history_store, managed, err)?;
             }
         }
         return Ok(());
@@ -1597,11 +1707,12 @@ fn run(config_path: &Path, run_args: RunArgs) -> Result<()> {
             if let Err(err) = sync_repo(
                 &mut logger,
                 &mut state_store,
+                &history_store,
                 managed,
                 run_args.dry_run,
                 verbose,
             ) {
-                handle_sync_error(&mut logger, &mut state_store, managed, err)?;
+                handle_sync_error(&mut logger, &mut state_store, &history_store, managed, err)?;
             }
 
             managed.next_run_at =
@@ -1649,14 +1760,15 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppConfig, CommandProbe, DefaultsConfig, QuietHoursConfig, RepositoryConfig, StatusEntry,
-        StatusOutput, branch_allowed, build_program_args, decision_blocks_auto_pull,
-        effective_report, in_quiet_hours, infer_repo_name, launchd_plist_path, quote_systemd_arg,
-        render_launchd_plist, render_systemd_service, sanitize_repo_name, systemd_unit_path,
-        upsert_repository, validate_config_schema,
+        AppConfig, CommandProbe, DefaultsConfig, HistoryRecord, HistoryStore, QuietHoursConfig,
+        RepositoryConfig, StatusEntry, StatusOutput, branch_allowed, build_program_args,
+        decision_blocks_auto_pull, effective_report, in_quiet_hours, infer_repo_name,
+        launchd_plist_path, quote_systemd_arg, render_launchd_plist, render_systemd_service,
+        sanitize_repo_name, systemd_unit_path, upsert_repository, validate_config_schema,
     };
     use chrono::NaiveTime;
     use repo_auto_puller_core::{Snapshot, SyncDecision};
+    use std::fs;
     use std::path::PathBuf;
 
     #[test]
@@ -1882,6 +1994,43 @@ mod tests {
         let json = serde_json::to_string(&output).expect("status output should serialize");
         assert!(json.contains("\"name\":\"openclawcode\""));
         assert!(json.contains("\"error\":\"fetch failed\""));
+    }
+
+    #[test]
+    fn appends_history_records_as_json_lines() {
+        let path = std::env::temp_dir().join(format!(
+            "repo-auto-puller-history-{}-{}.jsonl",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("current time should be after epoch")
+                .as_nanos()
+        ));
+        let store = HistoryStore::new(&path);
+        let record = HistoryRecord {
+            recorded_at: "2026-04-13T16:00:23+00:00".into(),
+            name: "openclawcode".into(),
+            path: "/tmp/openclawcode".into(),
+            level: "INFO".into(),
+            branch: Some("main".into()),
+            upstream: Some("origin/main".into()),
+            ahead: Some(0),
+            behind: Some(0),
+            dirty: Some(false),
+            decision: Some("up-to-date".into()),
+            message: Some("repository is up to date".into()),
+            error: None,
+        };
+
+        store
+            .append(&record)
+            .expect("history record should append successfully");
+        let contents = fs::read_to_string(&path).expect("history file should be readable");
+
+        assert!(contents.contains("\"name\":\"openclawcode\""));
+        assert!(contents.ends_with('\n'));
+
+        let _ = fs::remove_file(path);
     }
 
     #[test]

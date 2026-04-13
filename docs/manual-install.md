@@ -55,6 +55,8 @@ curl -fsSL https://raw.githubusercontent.com/zhyongrui/repo-auto-puller/main/scr
 ```toml
 [defaults]
 log_file = "~/.local/state/repo-auto-puller/repo-auto-puller.log"
+state_file = "~/.local/state/repo-auto-puller/status.json"
+history_file = "~/.local/state/repo-auto-puller/history.jsonl"
 verbose = false
 
 [[repositories]]
@@ -117,6 +119,12 @@ on_failure_command = "notify-send 'repo-auto-puller' \"$REPO_AUTO_PULLER_REPO_NA
 
 ```bash
 ~/.local/state/repo-auto-puller/status.json
+```
+
+每次同步的历史记录会按 JSON Lines 追加到：
+
+```bash
+~/.local/state/repo-auto-puller/history.jsonl
 ```
 
 ## 启动方式

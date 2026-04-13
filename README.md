@@ -136,6 +136,13 @@ quiet_hours = { start = "23:00", end = "07:00" }
 state_file = "~/.local/state/repo-auto-puller/status.json"
 ```
 
+如果你还想保留每次同步的历史流水，默认会追加到：
+
+```toml
+[defaults]
+history_file = "~/.local/state/repo-auto-puller/history.jsonl"
+```
+
 ## 新增：状态和配置检查
 
 查看仓库当前状态和阻塞原因：

@@ -79,6 +79,8 @@
 
 最近一次同步结果会默认持久化到 `~/.local/state/repo-auto-puller/status.json`，Agent 做排障时应把它和滚动日志一起看。
 
+每次同步结果的历史流水会默认追加到 `~/.local/state/repo-auto-puller/history.jsonl`。如果用户说“刚才明明拉过，为什么现在看不到”，Agent 应优先看这个文件，而不只是看最新状态文件。
+
 除非用户明确要求，不要把用户机器上的临时绝对路径提交回仓库。
 
 优先使用 `init` 子命令生成或更新配置，而不是让用户或代理手写 TOML：
