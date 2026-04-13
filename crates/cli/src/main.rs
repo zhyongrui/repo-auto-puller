@@ -66,6 +66,9 @@ struct StatusArgs {
 
     #[arg(long)]
     no_fetch: bool,
+
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -165,6 +168,25 @@ struct ManagedRepo {
 struct SelectedRepo {
     config: RepositoryConfig,
     on_failure_command: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct StatusOutput {
+    repositories: Vec<StatusEntry>,
+}
+
+#[derive(Debug, Serialize)]
+struct StatusEntry {
+    name: String,
+    path: String,
+    branch: Option<String>,
+    upstream: Option<String>,
+    ahead: Option<u32>,
+    behind: Option<u32>,
+    dirty: Option<bool>,
+    decision: Option<String>,
+    message: Option<String>,
+    error: Option<String>,
 }
 
 struct CommandProbe {
@@ -942,27 +964,72 @@ fn handle_sync_error(
 fn render_status(config_path: &Path, args: &StatusArgs) -> Result<()> {
     let config = load_config(config_path)?;
     let repos = selected_repositories(&config, &args.repo)?;
+    let mut output = Vec::with_capacity(repos.len());
 
     for repo in repos {
         let syncer = RepoSyncer::new(expand_tilde(&repo.config.path))
             .with_context(|| format!("failed to initialize repository {}", repo.config.name))?;
-        println!("Repository: {}", repo.config.name);
-        println!("  path: {}", syncer.repo_path().display());
+        let name = repo.config.name;
+        let path = syncer.repo_path().display().to_string();
 
         match probe_repository(&syncer, !args.no_fetch) {
             Ok((snapshot, report)) => {
-                println!("  branch: {}", snapshot.branch);
-                println!("  upstream: {}", snapshot.upstream);
-                println!("  ahead: {}", snapshot.ahead);
-                println!("  behind: {}", snapshot.behind);
-                println!("  dirty: {}", snapshot.dirty);
-                println!("  decision: {}", report.decision.as_str());
-                println!("  message: {}", report.message);
+                if args.json {
+                    output.push(StatusEntry {
+                        name,
+                        path,
+                        branch: Some(snapshot.branch),
+                        upstream: Some(snapshot.upstream),
+                        ahead: Some(snapshot.ahead),
+                        behind: Some(snapshot.behind),
+                        dirty: Some(snapshot.dirty),
+                        decision: Some(report.decision.as_str().to_owned()),
+                        message: Some(report.message),
+                        error: None,
+                    });
+                } else {
+                    println!("Repository: {name}");
+                    println!("  path: {path}");
+                    println!("  branch: {}", snapshot.branch);
+                    println!("  upstream: {}", snapshot.upstream);
+                    println!("  ahead: {}", snapshot.ahead);
+                    println!("  behind: {}", snapshot.behind);
+                    println!("  dirty: {}", snapshot.dirty);
+                    println!("  decision: {}", report.decision.as_str());
+                    println!("  message: {}", report.message);
+                }
             }
             Err(err) => {
-                println!("  error: {err}");
+                if args.json {
+                    output.push(StatusEntry {
+                        name,
+                        path,
+                        branch: None,
+                        upstream: None,
+                        ahead: None,
+                        behind: None,
+                        dirty: None,
+                        decision: None,
+                        message: None,
+                        error: Some(err.to_string()),
+                    });
+                } else {
+                    println!("Repository: {name}");
+                    println!("  path: {path}");
+                    println!("  error: {err}");
+                }
             }
         }
+    }
+
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&StatusOutput {
+                repositories: output,
+            })
+            .context("failed to serialize status output")?
+        );
     }
 
     Ok(())
@@ -1231,10 +1298,10 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppConfig, CommandProbe, DefaultsConfig, RepositoryConfig, build_program_args,
-        decision_blocks_auto_pull, infer_repo_name, launchd_plist_path, quote_systemd_arg,
-        render_launchd_plist, render_systemd_service, sanitize_repo_name, systemd_unit_path,
-        upsert_repository, validate_config_schema,
+        AppConfig, CommandProbe, DefaultsConfig, RepositoryConfig, StatusEntry, StatusOutput,
+        build_program_args, decision_blocks_auto_pull, infer_repo_name, launchd_plist_path,
+        quote_systemd_arg, render_launchd_plist, render_systemd_service, sanitize_repo_name,
+        systemd_unit_path, upsert_repository, validate_config_schema,
     };
     use repo_auto_puller_core::SyncDecision;
     use std::path::PathBuf;
@@ -1411,5 +1478,27 @@ mod tests {
         };
         assert!(probe.ok);
         assert_eq!(probe.detail, "active");
+    }
+
+    #[test]
+    fn serializes_status_output_with_error() {
+        let output = StatusOutput {
+            repositories: vec![StatusEntry {
+                name: "openclawcode".into(),
+                path: "/tmp/openclawcode".into(),
+                branch: None,
+                upstream: None,
+                ahead: None,
+                behind: None,
+                dirty: None,
+                decision: None,
+                message: None,
+                error: Some("fetch failed".into()),
+            }],
+        };
+
+        let json = serde_json::to_string(&output).expect("status output should serialize");
+        assert!(json.contains("\"name\":\"openclawcode\""));
+        assert!(json.contains("\"error\":\"fetch failed\""));
     }
 }

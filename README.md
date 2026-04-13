@@ -102,6 +102,12 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml init \
 repo-auto-puller --config ~/.config/repo-auto-puller/config.toml status --repo my-repo
 ```
 
+如果要给脚本、Agent 或其他工具消费，可直接输出 JSON：
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml status --repo my-repo --json
+```
+
 检查配置是否有效、仓库路径是否能初始化：
 
 ```bash

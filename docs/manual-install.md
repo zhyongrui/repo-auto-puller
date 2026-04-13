@@ -109,6 +109,12 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml --repo my-repo 
 repo-auto-puller --config ~/.config/repo-auto-puller/config.toml status --repo my-repo
 ```
 
+如果你想让脚本或其他工具读取状态，可以加上 `--json`：
+
+```bash
+repo-auto-puller --config ~/.config/repo-auto-puller/config.toml status --repo my-repo --json
+```
+
 ### 运行诊断
 
 安装好配置和服务后，推荐再跑一遍：
