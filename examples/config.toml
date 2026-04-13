@@ -1,5 +1,6 @@
 [defaults]
 log_file = "~/.local/state/repo-auto-puller/repo-auto-puller.log"
+state_file = "~/.local/state/repo-auto-puller/status.json"
 verbose = false
 # before_pull_command = "echo before pull"
 # after_pull_command = "echo after pull"

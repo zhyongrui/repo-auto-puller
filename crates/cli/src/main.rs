@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -133,6 +133,7 @@ struct AppConfig {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct DefaultsConfig {
     log_file: Option<PathBuf>,
+    state_file: Option<PathBuf>,
     #[serde(default)]
     verbose: bool,
     before_pull_command: Option<String>,
@@ -208,6 +209,28 @@ struct StatusEntry {
     error: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct PersistedState {
+    #[serde(default)]
+    repositories: BTreeMap<String, PersistedRepoState>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct PersistedRepoState {
+    name: String,
+    path: String,
+    updated_at: String,
+    level: String,
+    branch: Option<String>,
+    upstream: Option<String>,
+    ahead: Option<u32>,
+    behind: Option<u32>,
+    dirty: Option<bool>,
+    decision: Option<String>,
+    message: Option<String>,
+    error: Option<String>,
+}
+
 struct CommandProbe {
     ok: bool,
     detail: String,
@@ -218,6 +241,11 @@ struct EffectiveReport {
     message: String,
     level: &'static str,
     blocks_auto_pull: bool,
+}
+
+struct StateStore {
+    path: PathBuf,
+    state: PersistedState,
 }
 
 impl Logger {
@@ -252,6 +280,77 @@ impl Logger {
         .context("failed to write log line")?;
         self.writer.flush().context("failed to flush log writer")?;
         Ok(())
+    }
+}
+
+impl StateStore {
+    fn load(path: &Path) -> Result<Self> {
+        let path = expand_tilde(path);
+        let state = if path.exists() {
+            let raw = fs::read_to_string(&path)
+                .with_context(|| format!("failed to read state file {}", path.display()))?;
+            serde_json::from_str(&raw)
+                .with_context(|| format!("failed to parse state file {}", path.display()))?
+        } else {
+            PersistedState::default()
+        };
+        Ok(Self { path, state })
+    }
+
+    fn write(&self) -> Result<()> {
+        ensure_parent_dir(&self.path)?;
+        let json =
+            serde_json::to_string_pretty(&self.state).context("failed to serialize state file")?;
+        fs::write(&self.path, json)
+            .with_context(|| format!("failed to write state file {}", self.path.display()))?;
+        Ok(())
+    }
+
+    fn update_success(
+        &mut self,
+        managed: &ManagedRepo,
+        snapshot: &Snapshot,
+        effective: &EffectiveReport,
+    ) -> Result<()> {
+        self.state.repositories.insert(
+            managed.config.name.clone(),
+            PersistedRepoState {
+                name: managed.config.name.clone(),
+                path: managed.syncer.repo_path().display().to_string(),
+                updated_at: Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string(),
+                level: effective.level.to_owned(),
+                branch: Some(snapshot.branch.clone()),
+                upstream: Some(snapshot.upstream.clone()),
+                ahead: Some(snapshot.ahead),
+                behind: Some(snapshot.behind),
+                dirty: Some(snapshot.dirty),
+                decision: Some(effective.decision.clone()),
+                message: Some(effective.message.clone()),
+                error: None,
+            },
+        );
+        self.write()
+    }
+
+    fn update_error(&mut self, managed: &ManagedRepo, error: &str) -> Result<()> {
+        self.state.repositories.insert(
+            managed.config.name.clone(),
+            PersistedRepoState {
+                name: managed.config.name.clone(),
+                path: managed.syncer.repo_path().display().to_string(),
+                updated_at: Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string(),
+                level: "ERROR".to_owned(),
+                branch: None,
+                upstream: None,
+                ahead: None,
+                behind: None,
+                dirty: None,
+                decision: None,
+                message: None,
+                error: Some(error.to_owned()),
+            },
+        );
+        self.write()
     }
 }
 
@@ -350,6 +449,15 @@ fn build_logger(config: &AppConfig) -> Result<Logger> {
     }
 }
 
+fn build_state_store(config: &AppConfig) -> Result<StateStore> {
+    let path = config
+        .defaults
+        .state_file
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("~/.local/state/repo-auto-puller/status.json"));
+    StateStore::load(&path)
+}
+
 fn selected_repositories(config: &AppConfig, selected: &[String]) -> Result<Vec<SelectedRepo>> {
     let mut repos = Vec::new();
 
@@ -394,8 +502,9 @@ fn selected_repositories(config: &AppConfig, selected: &[String]) -> Result<Vec<
 fn build_managed_repos(
     config: AppConfig,
     run_args: &RunArgs,
-) -> Result<(Logger, bool, Vec<ManagedRepo>)> {
+) -> Result<(Logger, StateStore, bool, Vec<ManagedRepo>)> {
     let logger = build_logger(&config)?;
+    let state_store = build_state_store(&config)?;
     let verbose = run_args.verbose || config.defaults.verbose;
     let repos = selected_repositories(&config, &run_args.repo)?;
     let mut managed = Vec::with_capacity(repos.len());
@@ -415,7 +524,7 @@ fn build_managed_repos(
         });
     }
 
-    Ok((logger, verbose, managed))
+    Ok((logger, state_store, verbose, managed))
 }
 
 fn expand_tilde(path: &Path) -> PathBuf {
@@ -525,6 +634,7 @@ fn init_config(config_path: &Path, args: &InitArgs) -> Result<()> {
             log_file: Some(PathBuf::from(
                 "~/.local/state/repo-auto-puller/repo-auto-puller.log",
             )),
+            state_file: Some(PathBuf::from("~/.local/state/repo-auto-puller/status.json")),
             verbose: false,
             before_pull_command: None,
             after_pull_command: None,
@@ -1103,6 +1213,7 @@ fn run_pull_hook(
 
 fn sync_repo(
     logger: &mut Logger,
+    state_store: &mut StateStore,
     managed: &mut ManagedRepo,
     global_dry_run: bool,
     verbose: bool,
@@ -1117,6 +1228,7 @@ fn sync_repo(
         logger.log(effective.level, &managed.config.name, &effective.message)?;
         managed.last_message = Some(effective.message.clone());
     }
+    state_store.update_success(managed, &snapshot, &effective)?;
 
     managed.last_error = None;
 
@@ -1172,11 +1284,13 @@ fn sync_repo(
 
 fn handle_sync_error(
     logger: &mut Logger,
+    state_store: &mut StateStore,
     managed: &mut ManagedRepo,
     err: anyhow::Error,
 ) -> Result<()> {
     let error = err.to_string();
     logger.log("ERROR", &managed.config.name, &error)?;
+    state_store.update_error(managed, &error)?;
     if managed.last_error.as_deref() != Some(error.as_str()) {
         run_failure_hook(logger, managed, &error)?;
     }
@@ -1431,7 +1545,7 @@ fn check_config(config_path: &Path) -> Result<()> {
 
 fn run(config_path: &Path, run_args: RunArgs) -> Result<()> {
     let config = load_config(config_path)?;
-    let (mut logger, verbose, mut repos) = build_managed_repos(config, &run_args)?;
+    let (mut logger, mut state_store, verbose, mut repos) = build_managed_repos(config, &run_args)?;
 
     let keep_running = Arc::new(AtomicBool::new(true));
     let signal_flag = Arc::clone(&keep_running);
@@ -1442,8 +1556,14 @@ fn run(config_path: &Path, run_args: RunArgs) -> Result<()> {
 
     if run_args.once {
         for managed in &mut repos {
-            if let Err(err) = sync_repo(&mut logger, managed, run_args.dry_run, verbose) {
-                handle_sync_error(&mut logger, managed, err)?;
+            if let Err(err) = sync_repo(
+                &mut logger,
+                &mut state_store,
+                managed,
+                run_args.dry_run,
+                verbose,
+            ) {
+                handle_sync_error(&mut logger, &mut state_store, managed, err)?;
             }
         }
         return Ok(());
@@ -1474,8 +1594,14 @@ fn run(config_path: &Path, run_args: RunArgs) -> Result<()> {
                 continue;
             }
 
-            if let Err(err) = sync_repo(&mut logger, managed, run_args.dry_run, verbose) {
-                handle_sync_error(&mut logger, managed, err)?;
+            if let Err(err) = sync_repo(
+                &mut logger,
+                &mut state_store,
+                managed,
+                run_args.dry_run,
+                verbose,
+            ) {
+                handle_sync_error(&mut logger, &mut state_store, managed, err)?;
             }
 
             managed.next_run_at =

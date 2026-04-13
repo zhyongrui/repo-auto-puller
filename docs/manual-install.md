@@ -113,6 +113,12 @@ repo-auto-puller --config ~/.config/repo-auto-puller/config.toml init \
 on_failure_command = "notify-send 'repo-auto-puller' \"$REPO_AUTO_PULLER_REPO_NAME: $REPO_AUTO_PULLER_ERROR\""
 ```
 
+默认还会把每个仓库最近一次同步结果写到：
+
+```bash
+~/.local/state/repo-auto-puller/status.json
+```
+
 ## 启动方式
 
 ### 前台运行

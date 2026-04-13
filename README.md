@@ -129,6 +129,13 @@ path = "/path/to/your/repo"
 quiet_hours = { start = "23:00", end = "07:00" }
 ```
 
+最近一次同步结果会持久化到状态文件，默认路径是：
+
+```toml
+[defaults]
+state_file = "~/.local/state/repo-auto-puller/status.json"
+```
+
 ## 新增：状态和配置检查
 
 查看仓库当前状态和阻塞原因：
