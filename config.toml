@@ -1,0 +1,10 @@
+[defaults]
+log_file = "~/.local/state/repo-auto-puller/repo-auto-puller.log"
+verbose = false
+
+[[repositories]]
+name = "openclawcode"
+path = "/home/lyz/pros/openclawcode"
+interval_seconds = 60
+enabled = true
+dry_run = false

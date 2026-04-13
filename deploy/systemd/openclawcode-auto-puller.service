@@ -1,0 +1,13 @@
+[Unit]
+Description=Repo Auto Puller for openclawcode
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/home/lyz/.local/bin/repo-auto-puller --config /home/lyz/pros/repo-auto-puller/config.toml --repo openclawcode
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
