@@ -1,0 +1,13 @@
+[package]
+name = "repo-auto-puller"
+version = "0.1.0"
+edition = "2024"
+description = "A local-first Git repository auto-pull assistant"
+license = "MIT"
+publish = false
+
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+clap = { version = "4.5", features = ["derive"] }
+ctrlc = "3.4"
